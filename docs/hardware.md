@@ -95,8 +95,14 @@ Two things on that board must survive, and neither is in this repository:
    leaves the EEPROM sector alone, so they survive. `esptool.py erase_flash` does not —
    never run it on a board you intend to keep.
 
-If the address has been lost, the recoverable paths are: dump the old flash before
-overwriting it (`esptool.py read_flash 0 0x400000 old.bin`) and look for it in the image;
-receive a press from one of the original handheld remotes with an RTL-SDR or a CC1101 in
-receive mode; or accept the re-pairing. Dump the flash **first** either way — it costs a
-minute and it is the only copy.
+If the address has been lost, try the serial console first: a firmware that logs its
+configuration at boot will have printed it, and reading it back costs nothing. Otherwise
+dump the old flash before overwriting it (`esptool.py read_flash 0 0x400000 old.bin`) and
+look for it in the image — a 24-bit constant is a 4-byte-aligned little-endian word with a
+zero high byte — or receive a press off the air with an RTL-SDR or a CC1101 in receive
+mode, which yields the current rolling code as well. Dump the flash **first** either way:
+it costs a minute, and it is the only copy of the EEPROM sector.
+
+On a 4 MB ESP8266 that sector is at flash offset `0x3FB000` (`_EEPROM_start = 0x405fb000`),
+and it is the same address in every 4 MB linker layout the core ships — so a rebuild with a
+different filesystem size still finds the counters where the old firmware left them.
