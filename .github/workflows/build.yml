@@ -1,0 +1,26 @@
+name: build
+
+on: [push, pull_request]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: pip install --upgrade platformio
+      # The point of CI: build the repo exactly as cloned, with no secrets.h and no warm
+      # ~/.platformio. Anything that only compiles on the author's machine fails here.
+      - name: Provide placeholder secrets
+        run: |
+          if [ -f include/secrets.h.example ] && [ ! -f include/secrets.h ]; then
+            cp include/secrets.h.example include/secrets.h
+          fi
+      # Both hardware envs: the self-test is excluded from the default build filter, so a
+      # breaking change to the driver would otherwise rot unseen.
+      - run: pio run -e d1_mini -e d1_mini-radio
+      - run: pio test -e native
+      - name: RULE 0 — no site-specific values in tracked files
+        run: tools/check_secrets.sh
