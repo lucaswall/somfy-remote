@@ -335,7 +335,6 @@ void Receiver::applyEdges() {
       }
     }
 
-    const uint16_t abortedBefore = _decoder.aborted();
     SomfyHeard heard;
     const bool decoded = _decoder.feed(high, interval, &heard);
 
@@ -348,13 +347,12 @@ void Receiver::applyEdges() {
       _capture[_captureHead++] = (uint16_t)(clamped | (high ? 0x8000u : 0u));
     }
 
-    // A frame that reached the data state and then failed is the only interesting thing on
-    // this pin, and at a noisy 4 kHz the buffer holds barely a tenth of a second — so by the
-    // time anybody thinks to look, the press has long scrolled past. Freezing on the failure
-    // keeps the sync burst and the data that followed it, which is exactly the evidence
-    // needed to tell a remote with different timings from a receiver hearing noise between
-    // the symbols. Reading the capture re-arms it.
-    if (_decoder.aborted() != abortedBefore) {
+    // A frame that ran to full length and only then failed its checksum is the one thing on
+    // this pin worth stopping to look at. Not any abandoned frame: noise finds a false sync
+    // every few seconds and gives up within a handful of intervals, and a capture that
+    // freezes on the first of those never sees the press it was armed for. Reading the
+    // capture re-arms it.
+    if (_decoder.takeChecksumFailure()) {
       _captureFrozen = true;
     }
     if (!decoded) {

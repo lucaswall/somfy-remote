@@ -94,6 +94,18 @@ class SomfyDecoder {
     return started;
   }
 
+  // True once for each frame that ran all the way to 56 bits and then failed its checksum.
+  //
+  // Deliberately not "any abandoned frame": noise finds a false sync every few seconds and
+  // gives up within a handful of intervals, and a diagnostic that freezes on the first of
+  // those never sees the press it was armed for. A frame that reached full length and only
+  // then failed is the one that has something to say.
+  bool takeChecksumFailure() {
+    const bool failed = _checksumFailed;
+    _checksumFailed = false;
+    return failed;
+  }
+
  private:
   void abandon() {
     if (_inData) {
@@ -176,6 +188,7 @@ class SomfyDecoder {
     const bool valid = somfyParseFrame(_frame, out);
     if (!valid) {
       _aborted++;
+      _checksumFailed = true;
     }
     reset();
     return valid;
@@ -186,6 +199,7 @@ class SomfyDecoder {
   uint16_t _levelRepeats = 0;
   bool _bit = false;
   bool _frameStarted = false;
+  bool _checksumFailed = false;
   uint8_t _syncIntervals = 0;
   uint8_t _bits = 0;
   bool _inData = false;
