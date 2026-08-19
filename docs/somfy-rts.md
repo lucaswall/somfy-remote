@@ -60,11 +60,13 @@ lost transmission harmless and a repeated code useless.
 
 Two consequences worth stating plainly:
 
-- **Never send a code twice.** Ours is persisted to EEPROM *before* the frame is
-  transmitted, so a reboot mid-press skips a code rather than repeating one.
-- **Never lose the counter.** A firmware that restarts the count at zero is rejected until
-  it climbs back past where it was — in practice, until the motor is paired again by hand.
-  See `include/rolling_code.h`, which pins the EEPROM layout for that reason.
+- **Never send a code twice.** Ours is persisted *before* the frame is transmitted, and
+  the frame does not go out if the write cannot be verified — so a reboot mid-press skips
+  a code rather than repeating one.
+- **Never lose the counter, and never lower it.** A firmware that restarts the count at
+  zero is rejected until it climbs back past where it was — in practice, until the motor
+  is paired again by hand. `include/record_store.h` states the rule; `docs/storage.md`
+  describes how it is held.
 
 ### Pairing
 

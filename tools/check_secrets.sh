@@ -19,11 +19,16 @@ mac='[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}'
 # these credentials actually take was the one form that got through.
 cred='(PASSWORD|PASSWD|SECRET|TOKEN|API_?KEY|PSK|SSID)[[:space:]"]*([=:]|[[:space:]]+")[[:space:]]*"?[A-Za-z0-9._/+-]{6,}'
 # The remote address is the RF credential CLAUDE.md singles out, and no generic pattern can
-# recognise a bare hex number. What is recognisable is the macro it lives in, which is how
-# it would realistically escape: copied out of secrets.h into a doc or an example. It must
-# demand a digit — matching any non-space also fires on prose that merely names the macro.
-rfid='SOMFY_ADDRESS_BASE[[:space:]]+(0[xX])?[0-9]'
-allow='192\.0\.2\.|198\.51\.100\.|203\.0\.113\.|0\.0\.0\.0|127\.0\.0\.1|255\.255\.255\.255|<[A-Z_]+>|your-|placeholder|xx:xx|SOMFY_ADDRESS_BASE 0x000000'
+# recognise a bare hex number. What is recognisable is the shape it lives in.
+#
+# It no longer lives in a macro. The address moved out of the firmware and into the
+# retained configuration document, so the old `SOMFY_ADDRESS_BASE 0x…` pattern would now
+# match nothing at all — a scanner that cannot fire is worse than no scanner, because it
+# still reads like protection. The shape to catch is the document's own: a "base" or
+# "addr" key carrying hex, which is exactly what a worked example pasted into a doc looks
+# like.
+rfid='"(base|addr)"[[:space:]]*:[[:space:]]*"0[xX][0-9a-fA-F]'
+allow='192\.0\.2\.|198\.51\.100\.|203\.0\.113\.|0\.0\.0\.0|127\.0\.0\.1|255\.255\.255\.255|<[A-Z_]+>|your-|placeholder|xx:xx|change-me|"0x000000"'
 
 fail=0
 for pat in "$ipv4" "$mac" "$cred" "$rfid"; do

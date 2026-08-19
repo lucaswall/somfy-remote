@@ -15,6 +15,7 @@
 #include "radio.h"
 #include "remotes.h"
 #include "secrets.h"
+#include "store.h"
 #include "timing.h"
 #include "web.h"
 
@@ -34,9 +35,10 @@ static const char HOST[] = "somfy-remote";
 
 static Net net;
 static SomfyRadio radio(PIN_CSN, PIN_DATA);
-static Remotes remotes(radio, SOMFY_ADDRESS_BASE, SOMFY_REMOTE_COUNT);
-static HaMqtt mqtt(remotes, HOST);
-static WebUi web(remotes, net, HOST);
+static Store store;
+static Remotes remotes(radio, store);
+static HaMqtt mqtt(remotes, store, HOST);
+static WebUi web(remotes, store, mqtt, net, HOST);
 
 // A radio that fails to start is not recoverable by hand: the board is in a case. Retry it
 // from the loop instead of logging once and running blind forever.
@@ -80,6 +82,9 @@ void setup() {
     logError("radio     : CC1101 did not answer, will retry — run `make radio`");
   }
 
+  if (!store.begin()) {
+    logError("store     : no usable record store — the device cannot transmit");
+  }
   remotes.begin();
 
   heapLowWater = ESP.getFreeHeap();
@@ -101,14 +106,26 @@ void loop() {
   }
 
   remotes.loop();
+  store.loop();   // compaction, never on the press path
+
+  // The one irreversible step of the migration, gated on evidence rather than on a
+  // timer: the 2023 counters are erased only once every one of them is provably also in
+  // Home Assistant. Until then the store runs single-sector and says so.
+  if (store.legacyHeld() && mqtt.mirrorConfirmed()) {
+    if (store.releaseLegacy()) {
+      logLine("store     : migration complete, both sectors now in rotation");
+    }
+  }
 
   if (elapsed(now, lastHealth, HEALTH_MS)) {
     lastHealth = now;
     logLine("health    : heap %lu low %lu rssi %d wifi %s mqtt %s radio %s queued %u "
-            "faults %u",
+            "faults %u store %c/%u free%s",
             (unsigned long)ESP.getFreeHeap(), (unsigned long)heapLowWater, net.rssi(),
             net.connected() ? "up" : "down", mqtt.connected() ? "up" : "down",
-            radio.ready() ? "up" : "down", remotes.pending(), errorBuffer().count());
+            radio.ready() ? "up" : "down", remotes.pending(), errorBuffer().count(),
+            store.activeName(), store.freeSlots(),
+            store.degraded() ? " DEGRADED" : (store.legacyHeld() ? " legacy-held" : ""));
   }
 
   const uint32_t heap = ESP.getFreeHeap();

@@ -25,6 +25,22 @@ static const uint32_t CLIENT_TIMEOUT_MS = 2000;
 // of a realistic length. The margin is for a longer one.
 static const size_t PAYLOAD_LEN = 768;
 
+// How long to wait after connecting for retained messages before deciding what the device
+// knows. Not a blocking wait: the loop keeps running, so OTA and the web UI stay alive.
+// Commands are held rather than dropped for the duration.
+static const uint32_t CONFIG_WAIT_MS = 3000;
+
+// A mirrored counter further ahead than this is refused rather than adopted. One mistyped
+// publish can otherwise span the whole counter space, and unlike a merely stale mirror
+// that is not self-correcting — the device would persist the absurd value as local truth
+// and the floor rule would then forbid ever lowering it.
+static const uint32_t MAX_ADOPT_JUMP = 1000;
+
+// Sized against the worst-case configuration document at thirty remotes, which
+// test_config_doc pins below 2048. The default 256 does not fit a discovery payload
+// either.
+static const uint16_t MQTT_BUFFER = 2048;
+
 // snprintf truncates silently, and two truncated topics are one topic: remote 2 and
 // remote 21 would share a command topic and move together. The longest this firmware
 // builds is "<id>/remote29/my_state", so fail the build rather than the installation.
@@ -61,6 +77,31 @@ void HaMqtt::loop() {
 
   _mqtt.loop();
 
+  // Retained messages arrive during this window. Deciding early would mean reconciling
+  // against a mirror that had not finished arriving, and adopting a counter that is
+  // merely late looks exactly like adopting one that is absent.
+  if (_reconciling) {
+    if (!elapsed(millis(), _reconcileDeadline, 0)) {
+      return;
+    }
+    finishReconcile();
+    return;
+  }
+
+  // A configuration can arrive at any time, not only during the boot window — it is how a
+  // blank board is told what it controls, and whoever seeds it may well do so after the
+  // board has already given up waiting.
+  if (_haveStaged && (!_haveConfig || _staged.epoch > _config.epoch)) {
+    reconcileConfig();
+    reconcileCounters();
+    for (uint8_t i = 0; i < _remotes.count(); i++) {
+      if (_remotes.enabled(i)) {
+        publishDiscovery(i);
+        publishState(i);
+      }
+    }
+  }
+
   // Publish on any change, whoever caused it — a command from Home Assistant or a press
   // on the web page.
   for (uint8_t i = 0; i < _remotes.count(); i++) {
@@ -68,6 +109,24 @@ void HaMqtt::loop() {
       _publishedVersion[i] = _remotes.state(i).version();
       publishState(i);
     }
+    publishCounter(i);
+  }
+}
+
+// The floor, enforced on the way out. A press only ever raises a counter, so a publish
+// that would lower the retained value means something is wrong — a stale local store, a
+// remote that was re-added, a mirror that has moved on — and sending it would destroy the
+// one copy that survives the board.
+void HaMqtt::publishCounter(uint8_t remote) {
+  const uint32_t value = _remotes.counter(remote);
+  if (!_remotes.hasCounter(remote) || value <= _mirrorSeen[remote]) {
+    return;
+  }
+  char topic[TOPIC_LEN], payload[12];
+  topicCode(topic, sizeof(topic), MQTT_DEVICE_ID, remote);
+  snprintf(payload, sizeof(payload), "%lu", (unsigned long)value);
+  if (_mqtt.publish(topic, payload, true)) {
+    _mirrorSeen[remote] = value;
   }
 }
 
@@ -76,7 +135,7 @@ bool HaMqtt::connect() {
   topicAvailability(availability, sizeof(availability), MQTT_DEVICE_ID);
 
   _mqtt.setServer(MQTT_HOST, MQTT_PORT);
-  _mqtt.setBufferSize(1024);   // the discovery payloads do not fit the 256-byte default
+  _mqtt.setBufferSize(MQTT_BUFFER);
   _mqtt.setSocketTimeout(SOCKET_TIMEOUT_S);
   _wifi.setTimeout(CLIENT_TIMEOUT_MS);
   _mqtt.setCallback([this](char *topic, uint8_t *payload, unsigned int length) {
@@ -93,8 +152,39 @@ bool HaMqtt::connect() {
     return false;
   }
 
-  _mqtt.publish(availability, "online", true);
+  // Availability is deliberately not published here. Announcing the bridge as online
+  // before it has decided whose counters win leaves a window where Home Assistant believes
+  // commands will be honoured — and the command topic is not subscribed yet either, so
+  // they would simply be lost. Both happen at the end of finishReconcile().
+  char topic[TOPIC_LEN];
+  topicConfig(topic, sizeof(topic), MQTT_DEVICE_ID);
+  _mqtt.subscribe(topic);
+  topicCodeWildcard(topic, sizeof(topic), MQTT_DEVICE_ID);
+  _mqtt.subscribe(topic);
+  topicNames(topic, sizeof(topic), MQTT_DEVICE_ID);
+  _mqtt.subscribe(topic);
 
+  _haveStaged = false;
+  for (uint8_t i = 0; i < rs::MAX_REMOTES; i++) {
+    _haveMirror[i] = false;
+  }
+  _reconciling = true;
+  _reconcileDeadline = millis() + CONFIG_WAIT_MS;
+  _remotes.hold(true);
+
+  logLine("mqtt      : connected to %s as %s, waiting %lums for retained state", MQTT_HOST,
+          MQTT_USER, (unsigned long)CONFIG_WAIT_MS);
+  return true;
+}
+
+void HaMqtt::finishReconcile() {
+  _reconciling = false;
+
+  reconcileConfig();
+  reconcileCounters();
+
+  // Only now does the device accept commands: the counters are settled, so a press cannot
+  // be answered from a store that is about to be raised.
   char wildcard[TOPIC_LEN];
   topicCommandWildcard(wildcard, sizeof(wildcard), MQTT_DEVICE_ID);
   if (!_mqtt.subscribe(wildcard)) {
@@ -106,14 +196,223 @@ bool HaMqtt::connect() {
   // that lost its retained set is exactly what a reconnect looks like from here. State
   // goes with it for the same reason: republishing the config alone brings the entities
   // back blank, which is the failure the retained state topic exists to prevent.
+  //
+  // Disabled remotes are skipped, or a broker restart would resurrect an entity the web
+  // UI has just removed.
   for (uint8_t i = 0; i < _remotes.count(); i++) {
+    if (!_remotes.enabled(i)) {
+      continue;
+    }
     publishDiscovery(i);
     publishState(i);
+    publishCounter(i);
   }
 
-  logLine("mqtt      : connected to %s as %s, %u remotes announced", MQTT_HOST, MQTT_USER,
-          _remotes.count());
+  char availability[TOPIC_LEN];
+  topicAvailability(availability, sizeof(availability), MQTT_DEVICE_ID);
+  _mqtt.publish(availability, "online", true);
+
+  _remotes.hold(false);
+  logLine("mqtt      : ready, %u remotes announced", _remotes.count());
+}
+
+// The whole recovery story, in one loop. On a board that has been running, local is ahead
+// and the mirror is corrected upward. On a replacement board local is empty and the mirror
+// supplies everything — and the adopted value is *persisted*, not merely believed, because
+// a value held only in RAM is gone at the next reboot and the device would resume sending
+// codes from years ago.
+void HaMqtt::reconcileCounters() {
+  uint8_t adopted = 0, corrected = 0, refused = 0, missing = 0;
+
+  for (uint8_t i = 0; i < _remotes.count(); i++) {
+    uint32_t effective = 0;
+    const rs::Reconcile action =
+        rs::reconcile(_remotes.hasCounter(i), _remotes.counter(i), _haveMirror[i],
+                      _mirror[i], MAX_ADOPT_JUMP, &effective);
+
+    if (_haveMirror[i] && _mirror[i] > _mirrorSeen[i]) {
+      _mirrorSeen[i] = _mirror[i];
+    }
+
+    switch (action) {
+      case rs::REC_ADOPT:
+        if (_remotes.adoptCounter(i, effective)) {
+          adopted++;
+        }
+        break;
+      case rs::REC_KEEP_PUBLISH:
+        publishCounter(i);
+        corrected++;
+        break;
+      case rs::REC_REFUSE_JUMP:
+        logError("mqtt      : remote %u mirror %lu is %lu ahead of %lu — refused",
+                 i, (unsigned long)_mirror[i],
+                 (unsigned long)(_mirror[i] - _remotes.counter(i)),
+                 (unsigned long)_remotes.counter(i));
+        refused++;
+        break;
+      case rs::REC_NONE:
+        missing++;
+        break;
+      case rs::REC_KEEP_QUIET:
+        break;
+    }
+  }
+
+  if (adopted || corrected || refused || missing) {
+    logLine("mqtt      : counters %u adopted, %u corrected upward, %u refused, %u missing",
+            adopted, corrected, refused, missing);
+  }
+  if (missing > 0) {
+    logError("mqtt      : %u remote(s) have no rolling code and cannot transmit", missing);
+  }
+}
+
+void HaMqtt::reconcileConfig() {
+  const cfg::Action action =
+      cfg::decide(_haveConfig, _config.epoch, _haveStaged, _staged.epoch);
+
+  switch (action) {
+    case cfg::CFG_ADOPT: {
+      rs::LiveMap projected;
+      cfg::project(_staged, &projected);
+      bool ok = true;
+      // Diff-then-append: only records that actually change cost a slot, so a one-remote
+      // edit does not rewrite the whole configuration.
+      for (uint8_t i = 0; i < projected.count(); i++) {
+        const rs::Entry &e = projected.at(i);
+        if (_store.valueOr(e.ns, e.id, 0xFFFFFFFEu) == e.value) {
+          continue;
+        }
+        if (!_store.put(e.ns, e.id, e.value)) {
+          ok = false;
+          break;
+        }
+      }
+      // The epoch is written last and alone. A power loss part-way through the records
+      // above leaves the previous epoch committed, so replay sees the old configuration
+      // rather than half of the new one — which matters because a half-applied config
+      // would key some remotes to the wrong RF address.
+      if (ok && _store.put(rs::NS_SCALAR, rs::SCALAR_CONFIG_EPOCH, _staged.epoch)) {
+        _config = _staged;
+        _haveConfig = true;
+        logLine("mqtt      : config epoch %lu adopted from %s, %u remotes",
+                (unsigned long)_config.epoch, _config.writer, _config.remoteCount());
+      } else {
+        logError("mqtt      : config epoch %lu could not be persisted",
+                 (unsigned long)_staged.epoch);
+      }
+      break;
+    }
+    case cfg::CFG_REPUBLISH:
+      publishConfigDocument();
+      break;
+    case cfg::CFG_VERIFY_ONLY:
+      if (cfg::contentHash(_staged) != cfg::contentHash(_config)) {
+        logError("mqtt      : config epoch %lu differs from ours — writer '%s'. "
+                 "Not adopted; raise the epoch to win.",
+                 (unsigned long)_staged.epoch, _staged.writer);
+      }
+      break;
+    case cfg::CFG_NONE:
+      logError("mqtt      : no configuration anywhere — controlling nothing");
+      break;
+  }
+}
+
+void HaMqtt::publishConfigDocument() {
+  if (!_haveConfig) {
+    return;
+  }
+  char topic[TOPIC_LEN];
+  topicConfig(topic, sizeof(topic), MQTT_DEVICE_ID);
+  static char payload[MQTT_BUFFER];
+  const size_t n = cfg::serialise(_config, payload, sizeof(payload));
+  if (n == 0) {
+    logError("mqtt      : config document does not fit %u bytes", (unsigned)MQTT_BUFFER);
+    return;
+  }
+  if (!_mqtt.publish(topic, payload, true)) {
+    logError("mqtt      : config publish rejected (%u bytes)", (unsigned)n);
+  }
+}
+
+bool HaMqtt::applyConfig(const cfg::ConfigDoc &doc, const char *writer) {
+  cfg::ConfigDoc next = doc;
+  next.epoch = (_haveConfig ? _config.epoch : 0) + 1;
+  strncpy(next.writer, writer, cfg::WRITER_LEN - 1);
+  next.writer[cfg::WRITER_LEN - 1] = '\0';
+
+  rs::LiveMap projected;
+  cfg::project(next, &projected);
+  for (uint8_t i = 0; i < projected.count(); i++) {
+    const rs::Entry &e = projected.at(i);
+    if (e.ns == rs::NS_SCALAR && e.id == rs::SCALAR_CONFIG_EPOCH) {
+      continue;   // epoch last
+    }
+    if (_store.valueOr(e.ns, e.id, 0xFFFFFFFEu) == e.value) {
+      continue;
+    }
+    if (!_store.put(e.ns, e.id, e.value)) {
+      logError("mqtt      : config could not be persisted");
+      return false;
+    }
+  }
+  if (!_store.put(rs::NS_SCALAR, rs::SCALAR_CONFIG_EPOCH, next.epoch)) {
+    logError("mqtt      : config epoch could not be persisted");
+    return false;
+  }
+
+  _config = next;
+  _haveConfig = true;
+  publishConfigDocument();
+  for (uint8_t i = 0; i < _remotes.count(); i++) {
+    if (_remotes.enabled(i)) {
+      publishDiscovery(i);
+    }
+  }
+  logLine("mqtt      : config epoch %lu written by %s, %u remotes",
+          (unsigned long)next.epoch, next.writer, next.remoteCount());
   return true;
+}
+
+bool HaMqtt::mirrorConfirmed() const {
+  if (_reconciling || _remotes.count() == 0) {
+    return false;
+  }
+  for (uint8_t i = 0; i < _remotes.count(); i++) {
+    if (!_remotes.hasCounter(i)) {
+      continue;
+    }
+    if (_mirrorSeen[i] != _remotes.counter(i)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+const char *HaMqtt::nameOf(uint8_t remote) const {
+  return remote < rs::MAX_REMOTES ? _names[remote] : "";
+}
+
+// An empty retained payload on a discovery topic is how MQTT discovery says "forget this".
+// The two retained state topics go with it, or they persist into every nightly backup for
+// an entity nothing will ever republish.
+void HaMqtt::publishDiscoveryRemoval(uint8_t remote) {
+  static const char *const SUFFIX[3] = {"prog", "my", "cover"};
+  static const char *const COMPONENT[3] = {"button", "switch", "cover"};
+  char object[OBJECT_ID_LEN], topic[DISCOVERY_TOPIC_LEN];
+  for (uint8_t i = 0; i < 3; i++) {
+    uniqueId(object, sizeof(object), MQTT_DEVICE_ID, remote, SUFFIX[i]);
+    discoveryTopic(topic, sizeof(topic), HA_DISCOVERY_PREFIX, COMPONENT[i], object);
+    _mqtt.publish(topic, "", true);
+  }
+  char state[TOPIC_LEN];
+  topicCoverState(state, sizeof(state), MQTT_DEVICE_ID, remote);
+  _mqtt.publish(state, "", true);
+  topicMyState(state, sizeof(state), MQTT_DEVICE_ID, remote);
+  _mqtt.publish(state, "", true);
+  logLine("mqtt      : remote %u entities removed from Home Assistant", remote);
 }
 
 void HaMqtt::publishDiscovery(uint8_t remote) {
@@ -233,17 +532,80 @@ void HaMqtt::publishState(uint8_t remote) {
   }
 }
 
+// Nothing is published from here. PubSubClient hands the callback pointers into the very
+// buffer publish() writes through, so a publish inside a callback can overwrite the
+// payload being read. Everything received is staged, and the sequence that acts on it
+// runs from the loop.
 void HaMqtt::onMessage(const char *topic, const uint8_t *payload, unsigned int length) {
   uint8_t remote = 0;
-  if (!remoteFromCommandTopic(topic, MQTT_DEVICE_ID, &remote)) {
-    return;   // the subscription is a wildcard, so this is a topic of ours, not a fault
-  }
 
-  SomfyCommand command;
-  if (!somfyCommandFromText((const char *)payload, length, &command)) {
-    logError("mqtt      : remote %u sent a payload that is not a button", remote);
+  if (remoteFromCommandTopic(topic, MQTT_DEVICE_ID, &remote)) {
+    SomfyCommand command;
+    if (!somfyCommandFromText((const char *)payload, length, &command)) {
+      logError("mqtt      : remote %u sent a payload that is not a button", remote);
+      return;
+    }
+    _remotes.queue(remote, command);
     return;
   }
 
-  _remotes.queue(remote, command);
+  if (remoteFromCodeTopic(topic, MQTT_DEVICE_ID, &remote)) {
+    if (remote >= rs::MAX_REMOTES) {
+      return;
+    }
+    // A bare decimal integer and nothing else. A payload that is not one is treated as
+    // absent rather than as zero: adopting a zero would be a counter moving backwards to
+    // the beginning, which is the one direction that cannot be undone.
+    uint32_t value = 0;
+    if (length == 0 || length > 10) {
+      logError("mqtt      : remote %u mirror payload rejected", remote);
+      return;
+    }
+    for (unsigned int i = 0; i < length; i++) {
+      if (payload[i] < '0' || payload[i] > '9') {
+        logError("mqtt      : remote %u mirror payload is not a number", remote);
+        return;
+      }
+      value = value * 10 + (uint32_t)(payload[i] - '0');
+    }
+    _mirror[remote] = value;
+    _haveMirror[remote] = true;
+    return;
+  }
+
+  char expected[TOPIC_LEN];
+  topicConfig(expected, sizeof(expected), MQTT_DEVICE_ID);
+  if (strcmp(topic, expected) == 0) {
+    if (length == 0) {
+      return;   // a cleared config topic is not a config
+    }
+    if (cfg::parse((const char *)payload, length, &_staged)) {
+      _haveStaged = true;
+    } else {
+      logError("mqtt      : retained config document did not parse");
+    }
+    return;
+  }
+
+  topicNames(expected, sizeof(expected), MQTT_DEVICE_ID);
+  if (strcmp(topic, expected) == 0) {
+    JsonDocument doc;
+    if (deserializeJson(doc, payload, length) != DeserializationError::Ok) {
+      logError("mqtt      : names document did not parse");
+      return;
+    }
+    for (JsonPairConst kv : doc.as<JsonObjectConst>()) {
+      const int index = atoi(kv.key().c_str());
+      if (index < 0 || index >= (int)rs::MAX_REMOTES) {
+        continue;
+      }
+      const char *value = kv.value().as<const char *>();
+      if (value == nullptr) {
+        continue;
+      }
+      strncpy(_names[index], value, sizeof(_names[0]) - 1);
+      _names[index][sizeof(_names[0]) - 1] = '\0';
+    }
+    return;
+  }
 }

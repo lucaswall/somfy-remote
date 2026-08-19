@@ -130,8 +130,43 @@ static void refuses_topics_that_are_not_commands(void) {
   TEST_ASSERT_EQUAL_UINT8(0xFF, parsed);
 }
 
+// New topics, added alongside the pinned ones rather than in place of them. The existing
+// strings above are what Home Assistant keys thirty-six entities on and are not free to
+// change; these are additive.
+static void new_topics_are_shaped_as_documented(void) {
+  char buf[TOPIC_LEN];
+  topicConfig(buf, sizeof(buf), "wemos_somfy_remote");
+  TEST_ASSERT_EQUAL_STRING("wemos_somfy_remote/config", buf);
+  topicCode(buf, sizeof(buf), "wemos_somfy_remote", 7);
+  TEST_ASSERT_EQUAL_STRING("wemos_somfy_remote/code/remote7", buf);
+  topicCodeWildcard(buf, sizeof(buf), "wemos_somfy_remote");
+  TEST_ASSERT_EQUAL_STRING("wemos_somfy_remote/code/+", buf);
+  topicNames(buf, sizeof(buf), "wemos_somfy_remote");
+  TEST_ASSERT_EQUAL_STRING("wemos_somfy_remote/names", buf);
+}
+
+// A mis-parse here raises the wrong remote's counter, which is unrecoverable in the
+// direction that matters, so the parse is exact rather than prefix-based.
+static void code_topic_parses_only_its_own_shape(void) {
+  uint8_t remote = 0xFF;
+  TEST_ASSERT_TRUE(
+      remoteFromCodeTopic("wemos_somfy_remote/code/remote11", "wemos_somfy_remote", &remote));
+  TEST_ASSERT_EQUAL_UINT8(11, remote);
+
+  TEST_ASSERT_FALSE(
+      remoteFromCodeTopic("wemos_somfy_remote/code/remote11/x", "wemos_somfy_remote", &remote));
+  TEST_ASSERT_FALSE(
+      remoteFromCodeTopic("wemos_somfy_remote/remote11/state", "wemos_somfy_remote", &remote));
+  TEST_ASSERT_FALSE(
+      remoteFromCodeTopic("wemos_somfy_remote/code/remote", "wemos_somfy_remote", &remote));
+  TEST_ASSERT_FALSE(
+      remoteFromCodeTopic("other_device/code/remote1", "wemos_somfy_remote", &remote));
+}
+
 int main(void) {
   UNITY_BEGIN();
+  RUN_TEST(new_topics_are_shaped_as_documented);
+  RUN_TEST(code_topic_parses_only_its_own_shape);
   RUN_TEST(topics_match_the_deployed_firmware);
   RUN_TEST(availability_hangs_off_the_same_root);
   RUN_TEST(identifiers_match_the_deployed_firmware);

@@ -75,6 +75,67 @@ inline void topicMyState(char *out, size_t len, const char *deviceId, uint8_t re
   snprintf(out, len, "%s/remote%u/my_state", deviceId, (unsigned)remote);
 }
 
+// "<deviceId>/config" — the retained configuration document. What the device controls,
+// rather than what it is doing. Held in Home Assistant so a replacement board recovers it
+// instead of needing a rebuild with the right constants compiled in.
+inline void topicConfig(char *out, size_t len, const char *deviceId) {
+  snprintf(out, len, "%s/config", deviceId);
+}
+
+// "<deviceId>/code/remote<n>" — the rolling code mirror, retained, one topic per remote so
+// a press publishes one small message rather than rewriting all of them.
+//
+// This is the value that cannot be regenerated: lose it and every motor has to be paired
+// by hand again. It lives here so that it survives the board.
+inline void topicCode(char *out, size_t len, const char *deviceId, uint8_t remote) {
+  snprintf(out, len, "%s/code/remote%u", deviceId, (unsigned)remote);
+}
+
+// "<deviceId>/code/+" — one subscription for the mirror, for the same reason the command
+// wildcard exists.
+inline void topicCodeWildcard(char *out, size_t len, const char *deviceId) {
+  snprintf(out, len, "%s/code/+", deviceId);
+}
+
+// Which remote a mirrored counter belongs to. Exact, like remoteFromCommandTopic: a
+// wildcard matches more than it should and a mis-parse would raise the wrong counter.
+inline bool remoteFromCodeTopic(const char *topic, const char *deviceId, uint8_t *out) {
+  const size_t idLength = strlen(deviceId);
+  if (strncmp(topic, deviceId, idLength) != 0) {
+    return false;
+  }
+
+  static const char PREFIX[] = "/code/remote";
+  const char *rest = topic + idLength;
+  if (strncmp(rest, PREFIX, sizeof(PREFIX) - 1) != 0) {
+    return false;
+  }
+  rest += sizeof(PREFIX) - 1;
+
+  if (*rest < '0' || *rest > '9') {
+    return false;
+  }
+  unsigned value = 0;
+  while (*rest >= '0' && *rest <= '9') {
+    value = value * 10 + (unsigned)(*rest - '0');
+    if (value > 255) {
+      return false;
+    }
+    rest++;
+  }
+  if (*rest != '\0') {
+    return false;
+  }
+  *out = (uint8_t)value;
+  return true;
+}
+
+// "<deviceId>/names" — display names, published by Home Assistant rather than by us. The
+// device only reads them, and only to show them: nothing here is ever used to key anything.
+inline void topicNames(char *out, size_t len, const char *deviceId) {
+  snprintf(out, len, "%s/names", deviceId);
+}
+
 // "<deviceId>/status" — online / offline, retained, and the broker's last will.
 inline void topicAvailability(char *out, size_t len, const char *deviceId) {
   snprintf(out, len, "%s/status", deviceId);

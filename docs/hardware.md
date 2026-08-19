@@ -89,12 +89,14 @@ can tell whether it is connected, mis-wired or shorted. Verify that one by eye.
 
 Two things on that board must survive, and neither is in this repository:
 
-1. **The remotes' address** (`SOMFY_ADDRESS_BASE`). A motor is paired to an address. Flash
-   a firmware with a different one and the shutter simply stops answering, and getting it
-   back means pressing Prog on every motor by hand.
-2. **The rolling codes in EEPROM.** A normal `make upload` writes the application only and
-   leaves the EEPROM sector alone, so they survive. `esptool.py erase_flash` does not —
-   never run it on a board you intend to keep.
+1. **The remotes' address.** A motor is paired to an address. Drive it from a different
+   one and the shutter simply stops answering, and getting it back means pressing Prog on
+   every motor by hand. It is no longer compiled in: it lives in the retained
+   configuration document, which is what a replacement board reads at boot.
+2. **The rolling codes.** A normal `make upload` writes the application only and leaves
+   the store's two sectors alone, so they survive. `esptool.py erase_flash` does not —
+   never run it on a board you intend to keep. They are also mirrored to MQTT, which is
+   the copy that survives the board dying; see `docs/recovery.md`.
 
 If the address has been lost, try the serial console first: a firmware that logs its
 configuration at boot will have printed it, and reading it back costs nothing. Otherwise
@@ -104,6 +106,8 @@ zero high byte — or receive a press off the air with an RTL-SDR or a CC1101 in
 mode, which yields the current rolling code as well. Dump the flash **first** either way:
 it costs a minute, and it is the only copy of the EEPROM sector.
 
-On a 4 MB ESP8266 that sector is at flash offset `0x3FB000` (`_EEPROM_start = 0x405fb000`),
-and it is the same address in every 4 MB linker layout the core ships — so a rebuild with a
-different filesystem size still finds the counters where the old firmware left them.
+On a 4 MB ESP8266 the store occupies flash offsets `0x3FA000` and `0x3FB000` — the sector
+the linker calls `_EEPROM_start` and the unclaimed one below it, between there and
+`_FS_end`. Both are the same addresses in every 4 MB linker layout the core ships, so a
+rebuild with a different filesystem size still finds the counters. `docs/storage.md` has
+the format.

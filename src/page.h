@@ -63,6 +63,20 @@ footer a{color:var(--accent);text-decoration:none}
   </div>
 </div>
 
+<div class="card" id="unconfigured" style="display:none">
+  <h2>Not configured</h2>
+  <p>This board has no configuration yet. It is waiting for a retained
+  <code>config</code> document from Home Assistant, and controls nothing until one
+  arrives.</p>
+</div>
+
+<div class="card">
+  <div class="row">
+    <input id="key" type="password" placeholder="key" autocomplete="off">
+    <button onclick="addRemote()">Add remote</button>
+  </div>
+</div>
+
 <div id="remotes"></div>
 
 <div class="card">
@@ -84,12 +98,13 @@ function hms(s){const h=s/3600|0,m=(s/60|0)%60;return h?`${h}h ${m}m`:`${m}m ${s
 function build(n){
   $('remotes').innerHTML = Array.from({length:n},(_,i)=>`
     <div class="card">
-      <div class="hdr"><b>Remote ${i}</b><span class="badge" id="p${i}">—</span></div>
+      <div class="hdr"><b id="n${i}">Remote ${i}</b><span class="badge" id="p${i}">—</span></div>
       <div class="row">
         <button class="pri" onclick="send(${i},'Up')">Up</button>
         <button onclick="send(${i},'My')">My</button>
         <button class="pri" onclick="send(${i},'Down')">Down</button>
         <button class="prog" onclick="prog(${i})">Prog</button>
+        <button class="prog" onclick="removeRemote(${i})">Remove</button>
       </div>
     </div>`).join('');
   built = n;
@@ -102,11 +117,15 @@ function render(s){
   $('uptime').textContent = hms(s.uptime);
   $('heap').textContent = (s.heap/1024).toFixed(1) + ' KB';
   $('pending').textContent = s.pending;
+  $('unconfigured').style.display = s.configured ? 'none' : '';
   if (s.remotes.length !== built) build(s.remotes.length);
   for (const r of s.remotes){
     const b = $('p' + r.n);
-    b.textContent = r.position;
-    b.className = 'badge ' + (r.position === 'unknown' ? '' : r.position);
+    // The name comes from Home Assistant. The index is what everything here is keyed on,
+    // so it stays visible even when a name is available.
+    $('n' + r.n).textContent = r.name ? `${r.name} (${r.n})` : `Remote ${r.n}`;
+    b.textContent = r.ready ? r.position : (r.enabled ? 'blocked' : 'removed');
+    b.className = 'badge ' + (r.ready && r.position !== 'unknown' ? r.position : '');
   }
   document.body.classList.remove('stale');
 }
@@ -118,9 +137,32 @@ async function poll(){
 
 async function send(n, command){
   try {
-    render(await (await fetch(`/api/send?remote=${n}&command=${command}`,
-                              {method:'POST'})).json());
+    const r = await fetch(
+      `/api/send?remote=${n}&command=${command}&key=${encodeURIComponent($('key').value)}`,
+      {method:'POST'});
+    if (!r.ok) { alert(await r.text()); return; }
+    render(await r.json());
   } catch(e) { document.body.classList.add('stale'); }
+}
+
+// Configuration is edited here and nowhere else, and it is written through to Home
+// Assistant rather than kept on the board.
+async function addRemote(){
+  if (!confirm('Add a remote? It starts disabled for transmit until you pair it.')) return;
+  const r = await fetch(`/api/remote/add?key=${encodeURIComponent($('key').value)}`,
+                        {method:'POST'});
+  alert(await r.text());
+  poll();
+}
+
+async function removeRemote(n){
+  if (!confirm(`Remove remote ${n}? Its Home Assistant entities go away. `
+             + `The rolling code is kept, so adding it back resumes where it left off.`)) return;
+  const r = await fetch(
+    `/api/remote/remove?remote=${n}&key=${encodeURIComponent($('key').value)}`,
+    {method:'POST'});
+  alert(await r.text());
+  poll();
 }
 
 // Prog pairs or unpairs this emulated remote with whatever motor is listening in

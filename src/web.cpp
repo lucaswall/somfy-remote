@@ -4,8 +4,10 @@
 #include <ESP8266mDNS.h>
 #include <stdlib.h>
 
+#include "config_doc.h"
 #include "log.h"
 #include "page.h"
+#include "secrets.h"
 #include "somfy_frame.h"
 
 void WebUi::loop() {
@@ -28,6 +30,8 @@ void WebUi::start() {
   _server.on("/log", HTTP_GET, [this]() { handleLog(); });
   _server.on("/errors", HTTP_GET, [this]() { handleErrors(); });
   _server.on("/status", HTTP_GET, [this]() { handleStatus(); });
+  _server.on("/api/remote/add", HTTP_POST, [this]() { handleRemoteAdd(); });
+  _server.on("/api/remote/remove", HTTP_POST, [this]() { handleRemoteRemove(); });
   _server.onNotFound([this]() { _server.send(404, "text/plain", "not found"); });
   _server.begin();
 
@@ -38,6 +42,21 @@ void WebUi::start() {
   _started = true;
   logLine("web       : http://%s.local/  (http://%s/)", _hostname,
           WiFi.localIP().toString().c_str());
+}
+
+// The gate on everything that changes something. WEB_SECRET is site-specific and lives in
+// the gitignored header with the rest of the credentials.
+//
+// This is a shared secret over plain HTTP on a home LAN, not authentication in any
+// meaningful sense — it stops an unattended browser tab and a curious script, and it is
+// proportionate to a page that can now create and destroy Home Assistant entities. Anyone
+// who can read LAN traffic can read the secret.
+bool WebUi::authorised() {
+  if (_server.arg("key") == WEB_SECRET) {
+    return true;
+  }
+  _server.send(403, "text/plain", "forbidden\n");
+  return false;
 }
 
 // Streamed rather than assembled: the remote list grows with the installation, and the
@@ -52,17 +71,26 @@ void WebUi::handleState() {
 
   snprintf(chunk, sizeof(chunk),
            "{\"host\":\"%s\",\"ip\":\"%s\",\"rssi\":%d,\"uptime\":%lu,\"heap\":%u,"
-           "\"pending\":%u,\"remotes\":[",
+           "\"pending\":%u,\"configured\":%s,\"held\":%s,\"remotes\":[",
            _hostname, WiFi.localIP().toString().c_str(), _net.rssi(), (unsigned long)up,
-           ESP.getFreeHeap(), _remotes.pending());
+           ESP.getFreeHeap(), _remotes.pending(), _mqtt.configured() ? "true" : "false",
+           _remotes.held() ? "true" : "false");
   _server.sendContent(chunk);
 
+  // The name comes from Home Assistant and is shown, never used to key anything: every
+  // internal path here is the index. A remote with no name published simply reads as its
+  // index, which is what the page did before names existed.
   for (uint8_t i = 0; i < _remotes.count(); i++) {
     const RemoteState &state = _remotes.state(i);
+    const char *name = _mqtt.nameOf(i);
     snprintf(chunk, sizeof(chunk),
-             "%s{\"n\":%u,\"position\":\"%s\",\"code\":%u,\"version\":%lu}",
-             i == 0 ? "" : ",", i, coverPositionName(state.position()),
-             _remotes.rollingCode(i), (unsigned long)state.version());
+             "%s{\"n\":%u,\"name\":\"%s\",\"position\":\"%s\",\"code\":%lu,"
+             "\"version\":%lu,\"enabled\":%s,\"operational\":%s,\"ready\":%s}",
+             i == 0 ? "" : ",", i, name[0] != '\0' ? name : "",
+             coverPositionName(state.position()), (unsigned long)_remotes.counter(i),
+             (unsigned long)state.version(), _remotes.enabled(i) ? "true" : "false",
+             _remotes.operational(i) ? "true" : "false",
+             _remotes.transmittable(i) ? "true" : "false");
     _server.sendContent(chunk);
   }
 
@@ -71,6 +99,9 @@ void WebUi::handleState() {
 }
 
 void WebUi::handleSend() {
+  if (!authorised()) {
+    return;
+  }
   const String number = _server.arg("remote");
   const String button = _server.arg("command");
 
@@ -90,8 +121,96 @@ void WebUi::handleSend() {
     return;
   }
 
+  // Answered here rather than at the radio, so Home Assistant and the page give the same
+  // reason. A remote with no rolling code is the case that matters: transmitting without
+  // one would desynchronise the motor.
+  if (!_remotes.transmittable((uint8_t)remote)) {
+    _server.send(409, "text/plain",
+                 !_remotes.hasCounter((uint8_t)remote)
+                     ? "remote has no rolling code yet\n"
+                     : "remote is disabled or not operational\n");
+    return;
+  }
+
   _remotes.queue((uint8_t)remote, command);
   handleState();
+}
+
+// Adding takes the next never-used index, never a freed one. A recycled index would point
+// an existing Home Assistant entity and an existing rolling code at different hardware —
+// the counter belongs to the pair (index, address), and reusing one breaks that binding.
+void WebUi::handleRemoteAdd() {
+  if (!authorised()) {
+    return;
+  }
+  cfg::ConfigDoc next = _mqtt.config();
+  if (next.entries >= rs::MAX_REMOTES) {
+    _server.send(409, "text/plain", "no rolling code slots left\n");
+    return;
+  }
+
+  const uint8_t index = next.remoteCount();
+  if (index >= rs::MAX_REMOTES) {
+    _server.send(409, "text/plain", "no indices left\n");
+    return;
+  }
+
+  const String addr = _server.arg("address");
+  next.remotes[next.entries].index = index;
+  next.remotes[next.entries].address =
+      addr.length() > 0 ? cfg::parseHex(addr.c_str(), rs::ADDR_NONE) : rs::ADDR_NONE;
+  next.remotes[next.entries].enabled = true;
+  // A new remote is not operational until somebody has paired it and seen it move. The
+  // safe default is the one that cannot fire a motor by accident.
+  next.remotes[next.entries].operational = false;
+  next.entries++;
+
+  if (!_mqtt.applyConfig(next, "ui")) {
+    _server.send(500, "text/plain", "could not persist configuration\n");
+    return;
+  }
+  char body[64];
+  snprintf(body, sizeof(body), "added remote %u\n", index);
+  _server.send(200, "text/plain", body);
+}
+
+// Removing disables in place and keeps the index reserved. Renumbering the survivors would
+// re-key every Home Assistant entity above it, and deleting the rolling code would restart
+// the counter at zero if the same shutter were ever added back.
+void WebUi::handleRemoteRemove() {
+  if (!authorised()) {
+    return;
+  }
+  const String number = _server.arg("remote");
+  char *end = nullptr;
+  const long remote = strtol(number.c_str(), &end, 10);
+  if (number.length() == 0 || *end != '\0' || remote < 0 || remote >= _remotes.count()) {
+    _server.send(404, "text/plain", "no such remote\n");
+    return;
+  }
+
+  cfg::ConfigDoc next = _mqtt.config();
+  bool found = false;
+  for (uint8_t i = 0; i < next.entries; i++) {
+    if (next.remotes[i].index == (uint8_t)remote) {
+      next.remotes[i].enabled = false;
+      next.remotes[i].operational = false;
+      found = true;
+    }
+  }
+  if (!found) {
+    _server.send(404, "text/plain", "no such remote\n");
+    return;
+  }
+
+  if (!_mqtt.applyConfig(next, "ui")) {
+    _server.send(500, "text/plain", "could not persist configuration\n");
+    return;
+  }
+  _mqtt.publishDiscoveryRemoval((uint8_t)remote);
+  char body[80];
+  snprintf(body, sizeof(body), "removed remote %ld, rolling code kept\n", remote);
+  _server.send(200, "text/plain", body);
 }
 
 // Streamed a line at a time: the two rings are over 10 KB together and assembling one into
@@ -129,14 +248,20 @@ void WebUi::handleStatus() {
            "uptime  : %luh %02lum %02lus\n"
            "heap    : %u free\n"
            "wifi    : %s  ip %s  rssi %d dBm\n"
-           "remotes : %u emulated, %u command(s) queued\n"
+           "remotes : %u configured, %u command(s) queued\n"
+           "store   : sector %c gen %lu, %u free slots, %u spent%s%s\n"
+           "config  : epoch %lu by %s\n"
            "log     : %u of %u lines, %u faults\n",
            _hostname, __DATE__, __TIME__, ESP.getResetReason().c_str(),
            (unsigned long)(up / 3600), (unsigned long)((up / 60) % 60),
            (unsigned long)(up % 60), ESP.getFreeHeap(),
            _net.connected() ? "up" : "down", WiFi.localIP().toString().c_str(),
-           _net.rssi(), _remotes.count(), _remotes.pending(), logBuffer().count(),
-           LOG_LINES, errorBuffer().count());
+           _net.rssi(), _remotes.count(), _remotes.pending(), _store.activeName(),
+           (unsigned long)_store.generation(), _store.freeSlots(), _store.spent(),
+           _store.degraded() ? "  DEGRADED" : "",
+           _store.legacyHeld() ? "  legacy-held" : "",
+           (unsigned long)_mqtt.config().epoch, _mqtt.config().writer,
+           logBuffer().count(), LOG_LINES, errorBuffer().count());
 
   _server.setContentLength(CONTENT_LENGTH_UNKNOWN);
   _server.sendHeader("Cache-Control", "no-store");
@@ -145,12 +270,16 @@ void WebUi::handleStatus() {
   // One line per remote, streamed for the same reason /api/state is. The rolling code is
   // here because a counter that has stopped moving is the signature of an EEPROM that is
   // no longer being written — and of shutters that will ignore the next boot's commands.
-  char line[80];
+  char line[128];
   for (uint8_t i = 0; i < _remotes.count(); i++) {
     const RemoteState &state = _remotes.state(i);
-    snprintf(line, sizeof(line), "remote %-2u: %-7s  next code %-5u  %lu press(es)\n", i,
-             coverPositionName(state.position()), _remotes.rollingCode(i),
-             (unsigned long)state.version());
+    const char *name = _mqtt.nameOf(i);
+    snprintf(line, sizeof(line),
+             "remote %-2u: %-7s  next code %-6lu  %lu press(es)  %s  %s\n", i,
+             coverPositionName(state.position()), (unsigned long)_remotes.counter(i),
+             (unsigned long)state.version(),
+             _remotes.transmittable(i) ? "ready " : "BLOCKED",
+             name[0] != '\0' ? name : "");
     _server.sendContent(line);
   }
   _server.sendContent("");

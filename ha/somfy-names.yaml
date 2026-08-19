@@ -1,0 +1,51 @@
+# Publishes the bridge's display names, so renaming a shutter in the Home Assistant UI
+# reaches the device's own web page.
+#
+# Add to `automations.yaml`, or paste into an automation via the UI's YAML editor.
+#
+# **Why an automation rather than the device asking.** The device could read the names
+# straight from the REST API, but that needs a long-lived Home Assistant token, and those
+# cannot be scoped — anything holding one can call any service, including on locks. This
+# keeps the bridge's reach at exactly the twelve shutters it already drives.
+#
+# The device treats names as display only. Nothing here keys anything: every internal path
+# is the remote index, and a remote with no name published simply reads as its index.
+
+- id: somfy_remote_publish_names
+  alias: Somfy bridge — publish display names
+  description: >
+    Mirrors cover friendly names to the bridge, which shows them on its own page.
+    Fires when the bridge announces itself and every time Home Assistant restarts,
+    which is when a rename would otherwise go unnoticed.
+  mode: single
+  triggers:
+    - trigger: homeassistant
+      event: start
+    - trigger: mqtt
+      topic: wemos_somfy_remote/status
+      payload: online
+    # Catches renames without polling: the state object carries friendly_name.
+    - trigger: event
+      event_type: entity_registry_updated
+      event_data:
+        action: update
+  conditions: []
+  actions:
+    # Settled, or a restart publishes names from before the registry has finished loading.
+    - delay: "00:00:10"
+    - action: mqtt.publish
+      data:
+        topic: wemos_somfy_remote/names
+        retain: true
+        payload: >-
+          {% set ns = namespace(items=[]) %}
+          {% for state in states.cover
+             if state.entity_id.startswith('cover.somfy_remote') %}
+            {% set index = state.entity_id
+                 | replace('cover.somfy_remote', '') %}
+            {% if index is match('^[0-9]+$') %}
+              {% set ns.items = ns.items + [
+                   '"' ~ index ~ '":' ~ (state.name | tojson) ] %}
+            {% endif %}
+          {% endfor %}
+          {{ '{' ~ ns.items | join(',') ~ '}' }}

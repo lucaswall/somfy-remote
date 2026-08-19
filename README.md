@@ -72,10 +72,13 @@ make radio         # prove the CC1101 is wired, before anything else
 make run           # build, flash, print the boot banner
 ```
 
-`secrets.h` carries the WiFi and MQTT credentials, the OTA password, the remotes' address
-base and how many to emulate.
+`secrets.h` carries the WiFi and MQTT credentials, the OTA password and the key that
+guards the web UI's mutating endpoints. It deliberately does **not** carry the remotes'
+addresses or how many there are: that is configuration, and it lives in a retained MQTT
+document so a replacement board can recover it rather than needing a rebuild. See
+[`docs/recovery.md`](docs/recovery.md) for seeding it the first time.
 
-**Choose `SOMFY_ADDRESS_BASE` once and write it down.** A motor is paired to an address;
+**Choose the address base once and write it down.** A motor is paired to an address;
 changing it means walking to every shutter and pairing it again. If you are replacing an
 earlier firmware on an installed board, read the last section of
 [`docs/hardware.md`](docs/hardware.md) first — there are two values on that board that
@@ -136,23 +139,23 @@ and parses the remote number out of the topic.
 
 ## Rolling codes
 
-Each emulated remote has a 16-bit counter in EEPROM, incremented on every press. The motor
-accepts codes a short way ahead of the last one it saw, which is what makes a lost
-transmission harmless — and a repeated one useless.
+Each emulated remote has a counter, incremented on every press. The motor accepts codes a
+short way ahead of the last one it saw, which is what makes a lost transmission harmless —
+and a repeated one useless.
 
-The counter is written to EEPROM **before** the frame is transmitted, so a reboot in the
-middle of a press skips a code rather than repeating one. `/status` reports the next code
-for every remote: a counter that has stopped moving means the EEPROM is no longer being
-written, and the next boot's commands will be ignored.
+The counter is persisted **before** the frame is transmitted, and the frame is not
+transmitted at all if that fails. A reboot mid-press therefore skips a code rather than
+repeating one, which the motor forgives. `/status` reports the next code for every remote:
+a counter that has stopped moving means writes are no longer landing, and the next boot's
+commands will be ignored.
 
-Every press rewrites the EEPROM sector, which on an ESP8266 means a flash erase and write
-of 4 KB. At a few dozen presses a day that is comfortably inside the flash's endurance for
-longer than the hardware will last, but it is worth knowing before anything starts sending
-commands on a timer.
+Counters are stored in an append-only record store rather than rewritten in place, so a
+press costs one 8-byte flash write instead of a 4 KB erase — see [`docs/storage.md`](docs/storage.md).
+Every counter is also mirrored to a retained MQTT topic, which is what lets a replacement
+board recover them; [`docs/recovery.md`](docs/recovery.md) covers that.
 
-`include/rolling_code.h` pins where each counter lives. That layout is inherited from the
-firmware this replaces and is not free to change — the comment at the top of the file
-explains what breaks.
+One rule governs all of it: **a counter may only ever move forward.** Home Assistant may
+raise one on a board that is behind; nothing may ever lower one.
 
 ## The two rings
 

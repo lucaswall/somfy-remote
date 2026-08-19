@@ -2,7 +2,12 @@
 
 ESP8266 + CC1101 bridge that puts Somfy RTS shutters on Home Assistant over MQTT, by
 emulating as many handheld remotes as there are shutters. See `README.md` for what it does,
-`docs/hardware.md` for wiring and `docs/somfy-rts.md` for the protocol.
+`docs/hardware.md` for wiring, `docs/somfy-rts.md` for the protocol, `docs/storage.md` for
+how rolling codes are persisted and `docs/recovery.md` for replacing a dead board.
+
+Configuration is not compiled in. How many remotes exist, what address each carries and
+whether it may be driven all come from a retained MQTT document that Home Assistant holds,
+so a replacement board recovers instead of needing a rebuild.
 
 ---
 
@@ -22,9 +27,12 @@ network: the web UI showing shutter state to a browser on the LAN is not a RULE 
   documentation addresses (`192.0.2.x`) in examples
 - Hostnames of real machines, and the owner's home network topology
 - MAC addresses, and the ESP's chip ID
-- **`SOMFY_ADDRESS_BASE` — the emulated remotes' RF address.** This is the credential of
-  the shutters on a real house: anyone within radio range who knows it can open every one
-  of them. It is the single most sensitive value in the project
+- **The emulated remotes' RF address**, in any form — the `"base"` or `"addr"` field of a
+  configuration document, or a bare 24-bit constant. This is the credential of the
+  shutters on a real house: anyone within radio range who knows it can open every one of
+  them. It is the single most sensitive value in the project. It is no longer a build-time
+  macro — it lives in the retained MQTT configuration — so the shape to watch for in a
+  doc or an example is the JSON one, and `make check` scans for exactly that
 - Home Assistant instance URLs, long-lived tokens, or entity registries dumped verbatim
 - Photos of the house, floor plans, geolocation, anything identifying the address
 - Personal names, email addresses, phone numbers, purchase/invoice references —
@@ -93,12 +101,23 @@ installed and already paired.
 
 1. **The MQTT topics, unique ids and device names** in `include/topics.h`. Home Assistant
    keys its entities on them; changing one orphans a dozen covers and every automation
-   that mentions them. `test/test_topics/` pins the strings.
-2. **The EEPROM rolling code layout** in `include/rolling_code.h`. Read a counter from the
-   wrong address and the shutter ignores the command until somebody re-pairs the motor by
-   hand. `test/test_rolling_code/` pins the addresses.
+   that mentions them. `test/test_topics/` pins the strings. New topics may be added; the
+   existing ones are not free to change.
+2. **The rolling code, in every direction it can move.** A counter may only ever go
+   forward. Somfy receivers accept a code ahead of the last one they saw and reject one
+   they have already seen, so a counter that moves backwards — by a restored backup, a
+   re-added remote, a stale mirror, a bad migration — means walking to the motor and
+   pairing it again. `include/record_store.h` states the rule and
+   `test/test_record_store/` pins it.
 
-Both files say so at the top. Neither is a design choice that is still open.
+Neither is a design choice that is still open.
+
+**The EEPROM layout is no longer one of them.** Until 2026-08 the second entry pinned a
+fixed 12 × uint16 layout in the emulated EEPROM sector. That scheme is gone: it rewrote a
+whole 4 KB sector on every press and had consumed roughly half the flash's rated life. The
+counters now live in an append-only record store across two sectors — see
+`docs/storage.md`. The *invariant* survived the format change; the addresses did not, and
+pinning them here would now be pinning something nothing writes.
 
 ## Hardware
 

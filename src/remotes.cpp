@@ -1,26 +1,40 @@
 #include "remotes.h"
 
-#include <EEPROM.h>
-
 #include "log.h"
 
-Remotes::Remotes(SomfyRadio &radio, uint32_t addressBase, uint8_t count)
-    : _radio(radio), _base(addressBase),
-      _count(count > ROLLING_CODE_MAX_REMOTES ? ROLLING_CODE_MAX_REMOTES : count) {}
-
 void Remotes::begin() {
-  EEPROM.begin(ROLLING_CODE_EEPROM_SIZE);
-  if (_count == 0) {
-    logError("remotes   : SOMFY_REMOTE_COUNT is 0, there is nothing to control");
+  const uint8_t n = count();
+  if (n == 0) {
+    logLine("remotes   : none configured yet — waiting for Home Assistant");
     return;
   }
-  logLine("remotes   : %u emulated, next codes %u..%u", _count, rollingCode(0),
-          rollingCode((uint8_t)(_count - 1)));
+  logLine("remotes   : %u configured, next codes %lu..%lu", n, (unsigned long)counter(0),
+          (unsigned long)counter((uint8_t)(n - 1)));
+}
+
+uint32_t Remotes::addressOf(uint8_t remote) const {
+  const uint32_t override = _store.valueOr(rs::NS_ADDR, remote, rs::ADDR_NONE);
+  if (override != rs::ADDR_NONE) {
+    return override;
+  }
+  return _store.valueOr(rs::NS_SCALAR, rs::SCALAR_ADDRESS_BASE, 0) + remote;
+}
+
+bool Remotes::enabled(uint8_t remote) const {
+  return (_store.valueOr(rs::NS_FLAGS, remote, 0) & rs::FLAG_ENABLED) != 0;
+}
+
+bool Remotes::operational(uint8_t remote) const {
+  return (_store.valueOr(rs::NS_FLAGS, remote, 0) & rs::FLAG_OPERATIONAL) != 0;
+}
+
+bool Remotes::transmittable(uint8_t remote) const {
+  return remote < count() && enabled(remote) && operational(remote) && hasCounter(remote);
 }
 
 void Remotes::queue(uint8_t remote, SomfyCommand command) {
-  if (remote >= _count) {
-    logError("remotes   : no remote %u, have %u", remote, _count);
+  if (remote >= count()) {
+    logError("remotes   : no remote %u, have %u", remote, count());
     return;
   }
   if (!_queue.push(remote, command)) {
@@ -28,11 +42,19 @@ void Remotes::queue(uint8_t remote, SomfyCommand command) {
   }
 }
 
+bool Remotes::adoptCounter(uint8_t remote, uint32_t value) {
+  if (!_store.put(rs::NS_CODE, remote, value)) {
+    logError("remotes   : could not persist adopted counter for remote %u", remote);
+    return false;
+  }
+  return true;
+}
+
 void Remotes::loop() {
-  // Leave commands queued while the radio is known down rather than consuming them into
-  // nothing: a shutter that moves late is better than one that never moves and reports
-  // that it did.
-  if (!_radio.ready() || _queue.empty()) {
+  // Leave commands queued while the radio is known down, or while reconciliation has not
+  // decided whose counters win, rather than consuming them into nothing: a shutter that
+  // moves late is better than one that never moves and reports that it did.
+  if (_held || !_radio.ready() || _queue.empty()) {
     return;
   }
 
@@ -41,11 +63,30 @@ void Remotes::loop() {
     return;
   }
 
-  const uint16_t code = takeRollingCode(next.remote);
-  logLine("send      : remote %u %s (code %u)", next.remote,
-          somfyCommandName(next.command), code);
+  if (!transmittable(next.remote)) {
+    logError("remotes   : remote %u not transmittable (%s), %s dropped", next.remote,
+             !hasCounter(next.remote) ? "no rolling code"
+                                      : (!enabled(next.remote) ? "disabled"
+                                                               : "not operational"),
+             somfyCommandName(next.command));
+    return;
+  }
 
-  if (_radio.send(next.command, _base + next.remote, code)) {
+  const uint32_t code = counter(next.remote);
+
+  // Persisted before the frame goes out, never after, and the frame does not go out at all
+  // if that fails. A code sent twice is a code the receiver rejects; a code burnt by a
+  // reboot mid-transmission is one it skips over without complaint.
+  if (!_store.put(rs::NS_CODE, next.remote, code + 1)) {
+    logError("remotes   : remote %u %s not sent — rolling code is not durable",
+             next.remote, somfyCommandName(next.command));
+    return;
+  }
+
+  logLine("send      : remote %u %s (code %u)", next.remote,
+          somfyCommandName(next.command), rs::transmitCode(code));
+
+  if (_radio.send(next.command, addressOf(next.remote), rs::transmitCode(code))) {
     _states[next.remote].record(next.command);
   } else {
     // Dropped, not re-queued: every retry would take a fresh rolling code, and a counter
@@ -55,25 +96,4 @@ void Remotes::loop() {
     logError("send      : remote %u %s was not transmitted, command dropped", next.remote,
              somfyCommandName(next.command));
   }
-}
-
-uint16_t Remotes::rollingCode(uint8_t remote) const {
-  uint16_t code = 0;
-  EEPROM.get(rollingCodeAddress(remote), code);
-  return code;
-}
-
-// Persisted before the frame goes out, never after. A code sent twice is a code the
-// receiver rejects; a code burnt by a reboot mid-transmission is one it skips over
-// without complaint.
-uint16_t Remotes::takeRollingCode(uint8_t remote) {
-  const uint16_t code = rollingCode(remote);
-  const uint16_t next = rollingCodeNext(code);
-  EEPROM.put(rollingCodeAddress(remote), next);
-  if (!EEPROM.commit()) {
-    // Not fatal for this press, but the next boot will replay this code and the shutter
-    // will ignore it.
-    logError("remotes   : EEPROM write failed for remote %u", remote);
-  }
-  return code;
 }
