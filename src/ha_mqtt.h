@@ -58,6 +58,7 @@ class HaMqtt {
   void finishReconcile();
   void reconcileCounters();
   void reconcileConfig();
+  void loadConfigFromStore();
   void publishDiscovery(uint8_t remote);
   void publishState(uint8_t remote);
   void publishCounter(uint8_t remote);
@@ -87,7 +88,8 @@ class HaMqtt {
   uint32_t _publishedVersion[rs::MAX_REMOTES] = {0};
   uint32_t _lastAttempt = 0;
   uint32_t _retryMs = 5000;
-  uint32_t _reconcileDeadline = 0;
+  uint32_t _reconcileStart = 0;
   bool _attempted = false;
   bool _reconciling = false;
+  bool _loaded = false;
 };

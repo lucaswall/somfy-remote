@@ -53,7 +53,23 @@ static_assert(sizeof(MQTT_DEVICE_ID) + sizeof("/remote29/my_state") - 1 <= TOPIC
 static_assert(sizeof(MQTT_DEVICE_ID) + sizeof("29_cover") - 1 <= OBJECT_ID_LEN,
               "MQTT_DEVICE_ID is too long: see OBJECT_ID_LEN in include/topics.h");
 
+// What the board already believes, read back out of the store. Without this the device
+// starts every boot claiming to have no configuration, re-adopts the retained document it
+// already applied, and cannot compare epochs meaningfully — its own copy would always
+// look older than anyone else's.
+void HaMqtt::loadConfigFromStore() {
+  _loaded = true;
+  if (!_store.has(rs::NS_SCALAR, rs::SCALAR_CONFIG_EPOCH)) {
+    return;
+  }
+  cfg::fromStore(_store.map(), &_config);
+  _haveConfig = true;
+}
+
 void HaMqtt::loop() {
+  if (!_loaded) {
+    loadConfigFromStore();
+  }
   if (WiFi.status() != WL_CONNECTED) {
     return;
   }
@@ -81,7 +97,10 @@ void HaMqtt::loop() {
   // against a mirror that had not finished arriving, and adopting a counter that is
   // merely late looks exactly like adopting one that is absent.
   if (_reconciling) {
-    if (!elapsed(millis(), _reconcileDeadline, 0)) {
+    // Measured from the start, not against a precomputed deadline: elapsed() subtracts
+    // unsigned to survive the millis() rollover, so a timestamp in the future underflows
+    // to a huge interval and reads as already expired.
+    if (!elapsed(millis(), _reconcileStart, CONFIG_WAIT_MS)) {
       return;
     }
     finishReconcile();
@@ -169,7 +188,7 @@ bool HaMqtt::connect() {
     _haveMirror[i] = false;
   }
   _reconciling = true;
-  _reconcileDeadline = millis() + CONFIG_WAIT_MS;
+  _reconcileStart = millis();
   _remotes.hold(true);
 
   logLine("mqtt      : connected to %s as %s, waiting %lums for retained state", MQTT_HOST,
@@ -293,7 +312,11 @@ void HaMqtt::reconcileConfig() {
       // above leaves the previous epoch committed, so replay sees the old configuration
       // rather than half of the new one — which matters because a half-applied config
       // would key some remotes to the wrong RF address.
-      if (ok && _store.put(rs::NS_SCALAR, rs::SCALAR_CONFIG_EPOCH, _staged.epoch)) {
+      const bool epochUnchanged =
+          _store.valueOr(rs::NS_SCALAR, rs::SCALAR_CONFIG_EPOCH, 0xFFFFFFFFu) ==
+          _staged.epoch;
+      if (ok && (epochUnchanged ||
+                 _store.put(rs::NS_SCALAR, rs::SCALAR_CONFIG_EPOCH, _staged.epoch))) {
         _config = _staged;
         _haveConfig = true;
         logLine("mqtt      : config epoch %lu adopted from %s, %u remotes",
