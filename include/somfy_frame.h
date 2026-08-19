@@ -50,6 +50,49 @@ inline void somfyBuildFrame(SomfyCommand command, uint16_t rollingCode, uint32_t
   }
 }
 
+// What an overheard frame carries. The command is the raw nibble, not a SomfyCommand: a
+// handheld sends five values this firmware never transmits (docs/somfy-rts.md), and
+// narrowing them here would make a legitimate button press look like corruption.
+struct SomfyHeard {
+  uint8_t command;
+  uint16_t rollingCode;
+  uint32_t address;
+};
+
+// The inverse of somfyBuildFrame(), and the only thing standing between the receiver and a
+// band full of doorbells. False means the bytes are not an RTS frame.
+//
+// The checksum is four bits, so one frame in sixteen of pure noise passes it. That is not a
+// defect to fix here — there is no more entropy in the protocol to check against — it is
+// why a press is only believed after two copies agree.
+inline bool somfyParseFrame(const uint8_t *frame, SomfyHeard *out) {
+  if (frame[0] != SOMFY_KEY) {
+    return false;
+  }
+
+  // Undo the XOR chain backwards, from the end: each byte was XORed with the *already
+  // obfuscated* byte before it, so the source of every step is still intact ahead of us.
+  uint8_t plain[SOMFY_FRAME_LEN];
+  plain[0] = frame[0];
+  for (uint8_t i = SOMFY_FRAME_LEN - 1; i >= 1; i--) {
+    plain[i] = (uint8_t)(frame[i] ^ frame[i - 1]);
+  }
+
+  // A correct frame XORs down to zero across all fourteen nibbles, checksum included.
+  uint8_t checksum = 0;
+  for (uint8_t i = 0; i < SOMFY_FRAME_LEN; i++) {
+    checksum ^= (uint8_t)(plain[i] ^ (plain[i] >> 4));
+  }
+  if ((checksum & 0x0F) != 0) {
+    return false;
+  }
+
+  out->command = (uint8_t)(plain[1] >> 4);
+  out->rollingCode = (uint16_t)(((uint16_t)plain[2] << 8) | plain[3]);
+  out->address = ((uint32_t)plain[4] << 16) | ((uint32_t)plain[5] << 8) | plain[6];
+  return true;
+}
+
 inline const char *somfyCommandName(SomfyCommand command) {
   switch (command) {
     case SOMFY_MY:

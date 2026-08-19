@@ -165,6 +165,94 @@ static void code_topic_parses_only_its_own_shape(void) {
       remoteFromCodeTopic("other_device/code/remote1", "wemos_somfy_remote", &remote));
 }
 
+
+// --- learned controls -------------------------------------------------------------------
+
+// New topics may be added; the existing ones are not free to change. This one is new, and
+// it is pinned from the start so that it joins the set that cannot drift.
+static void builds_the_control_topic(void) {
+  char topic[TOPIC_LEN];
+  topicControl(topic, sizeof(topic), "wemos_somfy_remote", 0xAABBCC);
+  TEST_ASSERT_EQUAL_STRING("wemos_somfy_remote/control/aabbcc", topic);
+
+  // Six digits always: an address with leading zeros must not collapse into a shorter
+  // topic, or one control would answer to two names.
+  topicControl(topic, sizeof(topic), "wemos_somfy_remote", 0x000001);
+  TEST_ASSERT_EQUAL_STRING("wemos_somfy_remote/control/000001", topic);
+}
+
+static void builds_the_control_wildcard(void) {
+  char topic[TOPIC_LEN];
+  topicControlWildcard(topic, sizeof(topic), "wemos_somfy_remote");
+  TEST_ASSERT_EQUAL_STRING("wemos_somfy_remote/control/+", topic);
+}
+
+static void builds_the_press_topic(void) {
+  char topic[TOPIC_LEN];
+  topicControlPress(topic, sizeof(topic), "wemos_somfy_remote", 0x0000FF);
+  TEST_ASSERT_EQUAL_STRING("wemos_somfy_remote/control/0000ff/press", topic);
+}
+
+static void reads_the_address_back_out_of_the_topic(void) {
+  uint32_t address = 0;
+  TEST_ASSERT_TRUE(addressFromControlTopic("wemos_somfy_remote/control/aabbcc",
+                                           "wemos_somfy_remote", &address));
+  TEST_ASSERT_EQUAL_HEX32(0xAABBCC, address);
+
+  TEST_ASSERT_TRUE(addressFromControlTopic("wemos_somfy_remote/control/000000",
+                                           "wemos_somfy_remote", &address));
+  TEST_ASSERT_EQUAL_HEX32(0x000000, address);
+}
+
+// Every topic this device builds round-trips through its own parser. An address that
+// survives the round trip is one that cannot be mis-keyed by a formatting difference.
+static void the_control_topic_round_trips(void) {
+  static const uint32_t ADDRESSES[5] = {0x000000, 0x000001, 0x0000FF, 0xABCDEF, 0xFFFFFF};
+  for (uint8_t i = 0; i < 5; i++) {
+    char topic[TOPIC_LEN];
+    uint32_t back = 0;
+    topicControl(topic, sizeof(topic), "wemos_somfy_remote", ADDRESSES[i]);
+    TEST_ASSERT_TRUE(addressFromControlTopic(topic, "wemos_somfy_remote", &back));
+    TEST_ASSERT_EQUAL_HEX32(ADDRESSES[i], back);
+  }
+}
+
+// The subscription is a wildcard, so it matches more than it should. Everything that is not
+// exactly six lower-case hex digits has to be refused here, because the thing being keyed
+// is the RF address of somebody's motor.
+static void refuses_anything_that_is_not_exactly_an_address(void) {
+  uint32_t address = 0;
+  static const char *const BAD[] = {
+      "wemos_somfy_remote/control/aabbc",        // five digits
+      "wemos_somfy_remote/control/aabbccd",      // seven
+      "wemos_somfy_remote/control/AABBCC",       // upper case: one address, one topic
+      "wemos_somfy_remote/control/aabbcg",       // not hex
+      "wemos_somfy_remote/control/",             // nothing at all
+      "wemos_somfy_remote/control/aabbcc/press", // the press topic is not the control
+      "wemos_somfy_remote/code/remote0",         // a neighbouring family
+      "other_device/control/aabbcc",             // somebody else's device id
+  };
+  for (uint8_t i = 0; i < sizeof(BAD) / sizeof(BAD[0]); i++) {
+    TEST_ASSERT_FALSE(addressFromControlTopic(BAD[i], "wemos_somfy_remote", &address));
+  }
+}
+
+// The control family must not be caught by the parsers that already exist, and vice versa.
+// Three wildcards are live on this connection at once and a cross-match moves a shutter.
+static void the_control_family_does_not_collide(void) {
+  uint8_t remote = 0xFF;
+  TEST_ASSERT_FALSE(remoteFromCommandTopic("wemos_somfy_remote/control/aabbcc",
+                                           "wemos_somfy_remote", &remote));
+  TEST_ASSERT_FALSE(remoteFromCodeTopic("wemos_somfy_remote/control/aabbcc",
+                                        "wemos_somfy_remote", &remote));
+
+  uint32_t address = 0;
+  TEST_ASSERT_FALSE(addressFromControlTopic("wemos_somfy_remote/remote3/button",
+                                            "wemos_somfy_remote", &address));
+  TEST_ASSERT_FALSE(addressFromControlTopic("wemos_somfy_remote/remote3/state",
+                                            "wemos_somfy_remote", &address));
+}
+
 int main(void) {
   UNITY_BEGIN();
   RUN_TEST(new_topics_are_shaped_as_documented);
@@ -178,5 +266,12 @@ int main(void) {
   RUN_TEST(subscribes_with_one_wildcard);
   RUN_TEST(parses_back_every_topic_it_builds);
   RUN_TEST(refuses_topics_that_are_not_commands);
+  RUN_TEST(builds_the_control_topic);
+  RUN_TEST(builds_the_control_wildcard);
+  RUN_TEST(builds_the_press_topic);
+  RUN_TEST(reads_the_address_back_out_of_the_topic);
+  RUN_TEST(the_control_topic_round_trips);
+  RUN_TEST(refuses_anything_that_is_not_exactly_an_address);
+  RUN_TEST(the_control_family_does_not_collide);
   return UNITY_END();
 }

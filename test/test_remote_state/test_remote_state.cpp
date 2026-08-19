@@ -54,6 +54,55 @@ static void names_positions_for_the_state_topic(void) {
   TEST_ASSERT_EQUAL_STRING("unknown", coverPositionName(COVER_UNKNOWN));
 }
 
+
+// --- overheard presses ------------------------------------------------------------------
+
+// The whole point of receiving: a shutter opened by hand stops reading closed.
+static void an_overheard_press_moves_the_position(void) {
+  RemoteState state;
+  state.observe(SOMFY_UP);
+  TEST_ASSERT_EQUAL(COVER_OPEN, state.position());
+  state.observe(SOMFY_DOWN);
+  TEST_ASSERT_EQUAL(COVER_CLOSED, state.position());
+}
+
+// Nothing publishes until the version moves, so an observation that does not advance it is
+// an observation Home Assistant never hears about.
+static void an_overheard_press_advances_the_version(void) {
+  RemoteState state;
+  const uint32_t before = state.version();
+  state.observe(SOMFY_UP);
+  TEST_ASSERT_EQUAL_UINT32(before + 1, state.version());
+  state.observe(SOMFY_UP);
+  TEST_ASSERT_EQUAL_UINT32(before + 2, state.version());
+}
+
+// A handheld sends five commands this firmware never transmits. They move the shutter in
+// ways no position can be computed from, so the honest answer is to leave the last one
+// standing rather than to guess.
+static void an_unknown_command_leaves_the_position_alone(void) {
+  RemoteState state;
+  state.observe(SOMFY_UP);
+  static const uint8_t OTHERS[5] = {0x3, 0x5, 0x6, 0x9, 0xA};
+  for (uint8_t i = 0; i < 5; i++) {
+    state.observe(OTHERS[i]);
+    TEST_ASSERT_EQUAL(COVER_OPEN, state.position());
+  }
+}
+
+// My stops the shutter wherever it happens to be. Nothing in the protocol says where that
+// is, and inventing an answer is worse than admitting there is none.
+static void an_overheard_my_does_not_invent_a_position(void) {
+  RemoteState state;
+  state.observe(SOMFY_MY);
+  TEST_ASSERT_EQUAL(COVER_UNKNOWN, state.position());
+  TEST_ASSERT_EQUAL(SOMFY_MY, state.last());
+
+  state.observe(SOMFY_DOWN);
+  state.observe(SOMFY_MY);
+  TEST_ASSERT_EQUAL(COVER_CLOSED, state.position());
+}
+
 int main(void) {
   UNITY_BEGIN();
   RUN_TEST(starts_unknown);
@@ -61,5 +110,9 @@ int main(void) {
   RUN_TEST(my_and_prog_leave_the_position_alone);
   RUN_TEST(every_command_advances_the_version);
   RUN_TEST(names_positions_for_the_state_topic);
+  RUN_TEST(an_overheard_press_moves_the_position);
+  RUN_TEST(an_overheard_press_advances_the_version);
+  RUN_TEST(an_unknown_command_leaves_the_position_alone);
+  RUN_TEST(an_overheard_my_does_not_invent_a_position);
   return UNITY_END();
 }

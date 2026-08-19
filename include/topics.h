@@ -129,6 +129,72 @@ inline bool remoteFromCodeTopic(const char *topic, const char *deviceId, uint8_t
   return true;
 }
 
+// "<deviceId>/control/<6 hex, lower case>" — one learned physical control, retained.
+//
+// The address is the topic because it is the key: carried in the payload as well it could
+// disagree with itself, and this is the copy the broker indexes. Lower case and always six
+// digits, so one address has exactly one topic.
+//
+// One topic per control rather than one document for all of them. The configuration
+// document is atomic because a remote count without its addresses is dangerous; a control
+// map applied half way is not — one missing entry means one press is not mirrored — and a
+// document holding every control in this house would not fit the broker buffer.
+inline void topicControl(char *out, size_t len, const char *deviceId, uint32_t address) {
+  snprintf(out, len, "%s/control/%06lx", deviceId, (unsigned long)(address & 0xFFFFFFu));
+}
+
+inline void topicControlWildcard(char *out, size_t len, const char *deviceId) {
+  snprintf(out, len, "%s/control/+", deviceId);
+}
+
+// Which address a control message is for. Exact, like the other two parsers: the wildcard
+// matches more than it should, and these are the RF credentials of a house.
+inline bool addressFromControlTopic(const char *topic, const char *deviceId, uint32_t *out) {
+  const size_t idLength = strlen(deviceId);
+  if (strncmp(topic, deviceId, idLength) != 0) {
+    return false;
+  }
+
+  static const char PREFIX[] = "/control/";
+  const char *rest = topic + idLength;
+  if (strncmp(rest, PREFIX, sizeof(PREFIX) - 1) != 0) {
+    return false;
+  }
+  rest += sizeof(PREFIX) - 1;
+
+  uint32_t value = 0;
+  uint8_t digits = 0;
+  for (; *rest != '\0'; rest++) {
+    uint8_t d;
+    if (*rest >= '0' && *rest <= '9') {
+      d = (uint8_t)(*rest - '0');
+    } else if (*rest >= 'a' && *rest <= 'f') {
+      d = (uint8_t)(*rest - 'a' + 10);
+    } else {
+      return false;   // upper case is deliberately refused: one address, one topic
+    }
+    if (++digits > 6) {
+      return false;
+    }
+    value = (value << 4) | d;
+  }
+  if (digits != 6) {
+    return false;
+  }
+  *out = value;
+  return true;
+}
+
+// "<deviceId>/control/<hex>/press" — a press heard from that control, published
+// **non-retained**. The only topic on this device that is not retained, and it has to be:
+// Home Assistant's MQTT event platform discards a retained payload as a replay, which is
+// correct — a button press that happened yesterday is not news to a broker reconnect.
+inline void topicControlPress(char *out, size_t len, const char *deviceId,
+                              uint32_t address) {
+  snprintf(out, len, "%s/control/%06lx/press", deviceId,
+           (unsigned long)(address & 0xFFFFFFu));
+}
+
 // "<deviceId>/names" — display names, published by Home Assistant rather than by us. The
 // device only reads them, and only to show them: nothing here is ever used to key anything.
 inline void topicNames(char *out, size_t len, const char *deviceId) {
