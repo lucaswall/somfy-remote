@@ -2,7 +2,6 @@
 
 #include <stdint.h>
 
-#include "control_map.h"
 #include "radio.h"
 #include "remotes.h"
 #include "somfy_decoder.h"
@@ -87,6 +86,7 @@ class Receiver {
     uint32_t aborted;
     uint16_t mutes;
     uint16_t ownAddress;    // frames carrying one of our own addresses: impossible, so a fault
+    uint16_t pressesDropped;
     bool muted;
   };
   Stats stats() const;

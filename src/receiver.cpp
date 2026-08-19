@@ -398,6 +398,7 @@ Receiver::Stats Receiver::stats() const {
   s.aborted = _decoder.aborted();
   s.mutes = _mutes;
   s.ownAddress = _ownAddress;
+  s.pressesDropped = _pressesDropped;
   s.muted = _cooling;
   return s;
 }

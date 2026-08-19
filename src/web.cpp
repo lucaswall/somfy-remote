@@ -587,7 +587,9 @@ void WebUi::handleStatus() {
            (unsigned long)_receiver.secondsLeft(), (unsigned long)rx.interrupts,
            (unsigned long)rx.ringWrites, (unsigned long)rx.overflows,
            (unsigned long)rx.aborted, rx.mutes,
-           rx.ownAddress > 0 ? "  OWN ADDRESS HEARD" : "");
+           rx.ownAddress > 0    ? "  OWN ADDRESS HEARD"
+           : rx.pressesDropped > 0 ? "  PRESSES DROPPED"
+                                   : "");
   _server.sendContent(line);
   _server.sendContent("");
 }
