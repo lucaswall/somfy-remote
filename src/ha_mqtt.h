@@ -10,17 +10,10 @@
 #include "remotes.h"
 #include "store.h"
 
-// The only place that knows Home Assistant exists. Remotes speaks presses and shutters;
-// everything HA-shaped — discovery payloads, topic names, the switch that has to report
-// itself back off — stops here.
-//
-// It is also where the two halves of the recovery story meet. Home Assistant holds the
-// configuration (what remotes exist, their addresses, whether they may be driven) and a
-// mirror of every rolling code. On boot this class reconciles both against what the board
-// already knows, under one rule: **the mirror is a floor in both directions.** Home
-// Assistant may raise a counter on a board that is behind — that is how a replacement
-// board recovers — and the board may never lower one, which is what stops the recovery
-// path overwriting the only durable copy with a zero.
+// The only place that knows Home Assistant exists, and where the recovery story lives: HA
+// holds the configuration and a mirror of every rolling code, reconciled at boot under one
+// rule — **the mirror is a floor in both directions.** HA may raise a counter on a board
+// that is behind; the board may never lower one.
 class HaMqtt {
  public:
   HaMqtt(Remotes &remotes, Store &store, Receiver &receiver, const char *clientId)
@@ -48,18 +41,13 @@ class HaMqtt {
   // a discovery topic is how MQTT discovery expresses deletion.
   void publishDiscoveryRemoval(uint8_t remote);
 
-  // The learned controls: which physical handheld or wall button is which, and what each
-  // one drives. Held here because this is where the retained topics that carry it arrive,
-  // and because acting on a heard press means publishing cover state.
+  // Held here because this is where the retained topics carrying it arrive, and because
+  // acting on a heard press means publishing cover state.
   const ctl::ControlMap &controls() const { return _controls; }
 
-  // Names a control, or renames one. False means the broker did not take it — and that is
-  // worth surfacing rather than swallowing, because the retained topic is the only durable
-  // copy and somebody has walked across a house to produce it.
+  // False means the broker did not take it — worth surfacing, since the retained topic is
+  // the only durable copy and somebody walked a house to produce it.
   bool saveControl(const ctl::Control &control);
-
-  // An empty retained payload is how MQTT deletes. The press topic is not retained and so
-  // needs no clearing.
   bool forgetControl(uint32_t address);
 
  private:

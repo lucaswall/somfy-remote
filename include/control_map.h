@@ -9,35 +9,24 @@
 
 // Which physical control is which, and what each one drives.
 //
-// A captured frame carries an address, a rolling code and a command. Nothing in it says
-// which shutter moved, and because RTS is one-way nothing ever will — the motors never
-// answer, so there is no ground truth to infer from. This map is therefore *declared by a
-// human*, one control at a time, on the device's own page.
+// A captured frame says nothing about which shutter moved, and RTS is one-way so nothing
+// ever will. This map is declared by a human, one control at a time.
 //
-// **Home Assistant stores it and does not configure it.** One retained MQTT topic per
-// control, keyed by address, so a replacement board recovers the whole map the moment it
-// subscribes — the same trick that already recovers the configuration and the rolling
-// codes. Deliberately not one document: unlike the configuration, a control map applied
-// half-way is harmless, and a document large enough for this house would not fit the
-// broker buffer.
+// One retained MQTT topic per control rather than one document: a control map applied
+// half-way is harmless, unlike the configuration, and a document large enough for a real
+// house would not fit the broker buffer.
 //
-// It is deliberately **not** persisted to flash. The record store keys records by a byte
-// and carries a single u32, so it cannot express an address-keyed entity with a name at
-// all; and this map is not needed for the device to do its job. The broker replays it in
-// seconds.
+// Not persisted to flash. The record store keys by a byte and carries one u32, so it cannot
+// express an address-keyed entity with a name at all.
 
 namespace ctl {
 
-// Long enough for "Gallery handheld ch3" and short enough that the worst-case payload
-// stays well inside the broker buffer.
 static const uint8_t NAME_LEN = 24;
 
-// A dozen wall buttons plus two or three multi-channel handhelds, one of them with ten
-// channels. Thirty-two at 32 bytes each is 1 KB, which is the cheapest possible insurance
-// against running out half way through the walk that fills it.
+// A dozen wall buttons plus two or three multi-channel handhelds. 1 KB total.
 static const uint8_t MAX_CONTROLS = 32;
 
-// The worst case: the longest name, every index set, and the JSON around them.
+// The longest name, every index set, and the JSON around them.
 static const size_t PAYLOAD_LEN = 192;
 
 struct Control {
@@ -46,13 +35,12 @@ struct Control {
   char name[NAME_LEN];
 };
 
-// The address comes from the topic rather than the payload, because it is the key. Carried
-// twice it could disagree with itself, and the topic is the copy the broker indexes.
+// The address comes from the topic, not the payload: carried twice it could disagree with
+// itself.
 //
-// `d` is filtered only against the static bound. Whether an index currently exists is a
-// question about the configuration document — which arrives *after* these retained topics
-// on a cold boot — so answering it here would empty every drives set on exactly the blank
-// replacement board this design exists for. The live check happens when a press is applied.
+// `d` is checked against the static bound only. Whether an index currently *exists* is a
+// question about the configuration document, which arrives after these retained topics on a
+// cold boot — answering it here would empty every drives set on a blank replacement board.
 inline bool parse(const char *json, size_t len, uint32_t address, Control *out) {
   if (len == 0) {
     return false;   // an empty retained payload means "forget this", not "a nameless one"
@@ -81,8 +69,7 @@ inline bool parse(const char *json, size_t len, uint32_t address, Control *out) 
   return true;
 }
 
-// Returns 0 rather than truncating: serializeJson() truncates silently, and half a payload
-// is a parse failure at the far end instead of a visible fault here.
+// Returns 0 rather than truncating: half a payload is a parse failure at the far end.
 inline size_t serialise(const Control &control, char *out, size_t cap) {
   JsonDocument j;
   j["n"] = control.name;
@@ -98,8 +85,7 @@ inline size_t serialise(const Control &control, char *out, size_t cap) {
   return serializeJson(j, out, cap);
 }
 
-// Every learned control, in RAM. Last write wins per address, because each one is its own
-// retained topic and the broker delivers whatever was published last.
+// Last write wins per address: each control is its own retained topic.
 class ControlMap {
  public:
   const Control *find(uint32_t address) const {
@@ -111,8 +97,7 @@ class ControlMap {
     return nullptr;
   }
 
-  // False means the map is full. Refusing is deliberate: silently dropping the control
-  // somebody walked across a house to name is the one outcome worth avoiding.
+  // False means full — refused rather than dropped, since somebody walked a house to name it.
   bool set(const Control &control) {
     for (uint8_t i = 0; i < _count; i++) {
       if (_controls[i].address == control.address) {

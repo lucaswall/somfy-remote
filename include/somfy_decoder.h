@@ -6,34 +6,20 @@
 #include "somfy_frame.h"
 #include "somfy_pulses.h"
 
-// Turning what the radio heard back into a press: a state machine over edge intervals, and
-// the rule that decides when enough copies of a frame have arrived to believe it.
+// Edge intervals back into presses.
 //
-// Pure and header-only, so `make test` can drive it from the transmitter's own pulse train
-// (test_somfy_decode) instead of from a radio. That round trip is the only verification
-// available before hardware exists, and it is a strong one: the encoder is already pinned
-// against golden frames, so a decoder that agrees with it agrees with a real remote.
-//
-// **This runs in the main loop, never in the interrupt handler.** The ISR timestamps edges
-// and nothing else. Every reference implementation of this protocol decodes inside the ISR;
-// they run on chips that are not also holding up a WiFi stack on the same core.
+// **Runs in the main loop, never in the interrupt handler.** Reference implementations of
+// this protocol decode inside the ISR; this chip shares its core with a WiFi stack.
 
-// ±30 %, the tolerance the closest prior art uses against real handhelds. Wide because the
-// timings in somfy_pulses.h came from somebody else's remotes and this house's may differ —
-// docs/somfy-rts.md credits the sources, none of which is a datasheet.
+// Wide because somfy_pulses.h's timings came from other people's remotes, not a datasheet.
 #define SOMFY_TOLERANCE_PERCENT 30
 
-// Two hardware sync pairs, counted as four intervals because that is what an edge stream
-// presents. Two and not seven: a press opens with SOMFY_FIRST_SYNC pairs and only the four
-// repeats carry SOMFY_REPEAT_SYNC, so demanding seven would discard the first frame of
-// every press — the one that arrives 150 ms before any other.
+// Pairs, as intervals. Two rather than SOMFY_REPEAT_SYNC's seven: only the repeats carry
+// seven, so demanding them would discard the first frame of every press.
 #define SOMFY_MIN_SYNC_INTERVALS (2 * SOMFY_FIRST_SYNC)
 
-// Anything longer than this ends whatever was in progress. Two constraints fix it, and the
-// window between them is narrower than it looks: it must clear the longest interval a frame
-// contains — the 4550 µs software sync, which is 5915 µs once a remote running 30 % slow is
-// allowed for — and it must sit below the 9415 µs wake-up pulse, which is the first thing a
-// press sends and the thing this most needs to reset on.
+// Ends whatever was in progress. Boxed in on both sides: above the software sync at its
+// slowest tolerated (5915 µs), below the 9415 µs wake-up pulse this most needs to reset on.
 #define SOMFY_GAP_US 7000
 
 inline bool somfyNear(uint32_t measured, uint32_t expected) {
@@ -41,8 +27,7 @@ inline bool somfyNear(uint32_t measured, uint32_t expected) {
   return measured + slack >= expected && measured <= expected + slack;
 }
 
-// Feeds on (level, duration) pairs — "the line was high for 640 µs" — and reports a frame
-// once 56 bits have arrived and the checksum holds.
+// Fed (level, duration) pairs; reports a frame once 56 bits arrive and the checksum holds.
 class SomfyDecoder {
  public:
   void reset() {
@@ -54,13 +39,8 @@ class SomfyDecoder {
   }
 
   bool feed(bool high, uint32_t microseconds, SomfyHeard *out) {
-    // The level is recorded, counted and *not* acted on. See the note above feedData().
-    //
-    // Counted twice, deliberately. The overall figure is dominated by ambient noise and says
-    // nothing about reception; the in-frame figure is the one that would justify restoring
-    // the level as an error check, and on the one real frame captured so far it was zero.
-    // Gathering it costs a branch and settles an argument that otherwise runs on a statistic
-    // measured in the wrong place.
+    // Counted, never acted on — see feedData(). Split because the overall figure is mostly
+    // ambient noise; only the in-frame one says anything about reception.
     if (_haveLevel && high == _lastHigh) {
       _levelRepeats++;
       if (_inData) {
@@ -71,9 +51,6 @@ class SomfyDecoder {
     _lastHigh = high;
 
     if (microseconds > SOMFY_GAP_US) {
-      // A gap mid-frame is a frame abandoned, and used to be the one failure that went
-      // uncounted — reset() alone said nothing, so the most ordinary way to lose a burst
-      // was invisible from every diagnostic the firmware has.
       abandon();
       _haveLevel = true;
       _lastHigh = high;
@@ -87,39 +64,26 @@ class SomfyDecoder {
     return false;
   }
 
-  // The two ways a frame can fail, kept apart because they call for opposite fixes. A frame
-  // abandoned part-way means the interval train broke — noise, a lost edge, a gap. A frame
-  // that ran all fifty-six bits and failed its checksum means the timing held and the *bits*
-  // are wrong. Conflating them, as one counter did, makes the more ordinary failure invisible
-  // and the rarer one look like both.
-  //
-  // Both are 32-bit: at the ambient rates this board sees, a 16-bit counter wraps in well
-  // under two minutes, and a diagnostic that silently counts backwards is worse than none.
+  // Separate because they call for opposite fixes: a broken interval train versus timing
+  // that held while the bits came out wrong. 32-bit — 16 wraps in under two minutes here.
   uint32_t abandoned() const { return _abandoned; }
   uint32_t badChecksum() const { return _badChecksum; }
 
-  // How often two consecutive intervals arrived at the same level, which cannot happen if
-  // every edge was seen. The sharpest measure available of how much the front end is
-  // dropping: near zero means a clean line, and a large fraction means the data pin is
-  // chattering faster than anything downstream can follow. 32-bit for the reason above.
+  // Consecutive intervals at the same level, which cannot happen if every edge was seen —
+  // so the sharpest available measure of how much the front end is dropping.
   uint32_t levelRepeats() const { return _levelRepeats; }
   uint32_t levelRepeatsInFrame() const { return _levelRepeatsInFrame; }
 
-  // True once for each frame that just began, so a diagnostic capture can start where the
-  // data does. Without it the sync burst fills most of the buffer and the frame is cut off
-  // at the far end — which reads exactly like a corrupt frame and is not one.
+  // Lets a diagnostic capture start where the data does; a sync burst otherwise fills the
+  // buffer and the frame is clipped at the far end, which reads as corruption and is not.
   bool takeFrameStart() {
     const bool started = _frameStarted;
     _frameStarted = false;
     return started;
   }
 
-  // True once for each frame that ran all the way to 56 bits and then failed its checksum.
-  //
-  // Deliberately not "any abandoned frame": noise finds a false sync every few seconds and
-  // gives up within a handful of intervals, and a diagnostic that freezes on the first of
-  // those never sees the press it was armed for. A frame that reached full length and only
-  // then failed is the one that has something to say.
+  // Not "any abandoned frame": noise finds a false sync every few seconds and gives up
+  // within a handful of intervals, so a capture armed on those never sees a real press.
   bool takeChecksumFailure() {
     const bool failed = _checksumFailed;
     _checksumFailed = false;
@@ -134,11 +98,9 @@ class SomfyDecoder {
     reset();
   }
 
-  // Hardware sync is a burst of 2560 µs half-periods; the software sync that follows is a
-  // single 4550 µs high. The hardware test comes first because at ±30 % the two windows
-  // overlap between 3185 and 3328 µs, and mistaking a software sync for one more hardware
-  // sync only costs this frame — the reverse would start reading data from the middle of a
-  // sync burst.
+  // Hardware sync first: at ±30 % the two windows overlap between 3185 and 3328 µs, and
+  // mistaking a software sync for a hardware one costs this frame, where the reverse would
+  // start reading data from the middle of a sync burst.
   void feedSync(uint32_t microseconds) {
     if (somfyNear(microseconds, SOMFY_HW_SYNC_US)) {
       if (_syncIntervals < 0xFF) {
@@ -159,23 +121,13 @@ class SomfyDecoder {
     _syncIntervals = 0;
   }
 
-  // Manchester, inverted: a 1 is low then high. Bits come from the *durations* alone, with a
-  // running toggle seeded at the software sync — a full symbol flips the current bit and
-  // emits it, and a pair of half symbols emits it again unchanged.
+  // Manchester, inverted: a 1 is low then high. Bits come from the durations alone, toggled
+  // from a seed at the software sync.
   //
-  // An earlier version of this derived the bit from the level of the interval instead, which
-  // is equivalent on a clean stream and looked strictly better: a toggle that slips yields a
-  // whole frame of plausible garbage, while a level that repeats is a lost edge you can
-  // catch. On this hardware it decoded nothing at all.
-  //
-  // The reason is the glitch filter in front of it. It drops every edge closer than
-  // SOMFY_SYMBOL_US * 0.7 to the last one it kept, and under a noisy OOK line that is an
-  // arbitrary number of edges rather than a tidy pair — so the recorded level is very nearly
-  // random. Measured on the installed board: the level alternated on 19 % of transitions
-  // where it must alternate on 100 %, biased high because a chattering data line sits high.
-  //
-  // Every reference implementation of this protocol decodes from durations, and this is why.
-  // The level is still recorded, because levelRepeats() is the number that found this.
+  // **Do not derive the bit from the interval's level instead.** It is equivalent on a clean
+  // stream and looks safer, but the glitch filter ahead of this drops an arbitrary number of
+  // edges under a noisy line rather than a tidy pair, so the recorded level is close to
+  // random and nothing decodes at all. levelRepeats() is what measures that.
   bool feedData(uint32_t microseconds, SomfyHeard *out) {
     if (somfyNear(microseconds, 2 * SOMFY_SYMBOL_US)) {
       if (_waitingHalf) {
@@ -232,24 +184,16 @@ class SomfyDecoder {
 
 // --- from frames to presses ---------------------------------------------------------------
 
-// A press is one button push. Somfy sends each one five times (docs/somfy-rts.md), so a
-// receiver that reports every frame reports every press five times.
-//
-// Copies are collapsed by (address, rolling code) rather than by a timer, because the
-// rolling code *is* the press identifier: the five copies of one push carry the same one
-// and the next push carries the next. A pure time window would merge two quick presses and
-// split one slow burst.
+// Copies are collapsed by rolling code rather than by a timer: the code *is* the press
+// identifier. A pure time window would merge two quick presses and split one slow burst.
 #define SOMFY_BURST_MS 1200
 
-// Two agreeing copies before a press is believed. The frame checksum is four bits and
-// cannot even see a single-bit error (test_somfy_frame pins this: 40 of 56 flips decode
-// clean, as a *different* address), so one frame is not evidence of anything. Two identical
-// copies is.
+// The frame checksum is four bits and cannot see a single-bit error at all — test_somfy_frame
+// pins it: 44 of 56 flips decode clean. One frame is not evidence of anything.
 #define SOMFY_BURST_COPIES 2
 
-// Four remotes mid-burst at once. One slot is not enough: a neighbour's remote, or two
-// people pressing during the naming walk, would thrash a single slot and neither press
-// would ever reach its second copy.
+// One slot is not enough: a second transmitter mid-burst would thrash it and neither press
+// would reach its second copy.
 #define SOMFY_BURST_SLOTS 4
 
 struct SomfyPress {
@@ -260,20 +204,17 @@ struct SomfyPress {
 
 class SomfyPressAssembler {
  public:
-  // True exactly once per press, on the copy that confirms it — roughly 150 ms into the
-  // burst rather than at the end of it. `nowMs` is millis(); the arithmetic is unsigned, so
-  // the rollover is not a special case.
+  // True once per press, on the copy that confirms it. Unsigned arithmetic throughout, so
+  // the millis() rollover is not a special case.
   bool feed(const SomfyHeard &heard, uint32_t nowMs, SomfyPress *out) {
     Slot *slot = find(heard.address);
     if (slot == nullptr) {
       slot = evictOldest(nowMs);
     }
 
-    // The command is part of the comparison, and leaving it out was not harmless. A single
-    // merged edge aligned to the start of byte 1 inverts the command nibble while leaving
-    // the address and the rolling code intact — the checksum nibble moves by the same 0xF
-    // and cancels — so a corrupt copy and a clean copy of one press look like the same
-    // burst, and the press was reported with whichever command arrived first.
+    // The command must be compared too: a merged edge at the start of byte 1 inverts the
+    // command nibble while address and rolling code survive, because the checksum nibble
+    // moves by the same amount and cancels.
     const bool sameBurst = slot->used && slot->address == heard.address &&
                            slot->rollingCode == heard.rollingCode &&
                            slot->command == heard.command &&

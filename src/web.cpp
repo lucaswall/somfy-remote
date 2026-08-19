@@ -12,15 +12,11 @@
 #include "control_map.h"
 #include "somfy_frame.h"
 
-// Names arrive from Home Assistant over MQTT and from the control form, and three places
-// splice them into JSON built with snprintf rather than a serialiser. One double quote in a
-// cover's friendly name makes /api/state unparseable, and the operation page's poll() only
-// marks itself stale — so the page shows no shutters, no buttons and no message, for ever,
-// with /status still working and nothing pointing at the cause.
-//
-// Escaping at the emitter rather than filtering at each door: there are three doors, one of
-// them (the MQTT names topic) is not ours to filter, and a name is display text that has
-// every right to contain a quote.
+// Names come from Home Assistant and from the control form, into JSON built with snprintf.
+// One double quote makes /api/state unparseable, and the operation page's poll() only marks
+// itself stale — so it shows no shutters and no message, permanently, with /status fine and
+// nothing pointing at the cause. Escaped at the emitter because one of the three doors is
+// the MQTT names topic, which is not ours to filter.
 static void appendJsonString(char *out, size_t cap, const char *in) {
   size_t at = strlen(out);
   for (; *in != '\0' && at + 7 < cap; in++) {
@@ -77,9 +73,7 @@ void WebUi::start() {
   _server.on("/api/capture", HTTP_GET, [this]() { handleCapture(); });
   _server.onNotFound([this]() { _server.send(404, "text/plain", "not found"); });
 
-  // Needed before any handler can read it; the server discards headers it was not told to
-  // keep. This is the whole of the CSRF defence — see sameOrigin().
-  _server.collectHeaders("Origin");
+  _server.collectHeaders("Origin");   // the server discards headers it was not told to keep
   _server.begin();
 
   // ArduinoOTA already started mDNS under the same hostname; advertising the web service
@@ -91,17 +85,12 @@ void WebUi::start() {
           WiFi.localIP().toString().c_str());
 }
 
-// A POST that changes something must not be triggerable by a page the browser happens to
-// have open. `/api/send` is deliberately unauthenticated — it does what Home Assistant
-// already does — but "anyone in the house" and "any website anyone in the house visits" are
-// very different sets, and a cross-origin auto-submitting form or a no-cors fetch reaches
-// neither a preflight nor a password.
+// "Anyone in the house" and "any website anyone in the house visits" are different sets,
+// and neither a cross-origin form post nor a no-cors fetch triggers a preflight.
 //
-// An absent Origin is allowed: curl, the status page's own fetches on older browsers, and
-// anything scripted from a terminal have no reason to carry one, and this is a debug surface
-// on a LAN. A *present* one has to match the host the request arrived at — compared against
-// the Host header rather than a hard-coded name, because the UI is reached both by IP and as
-// <hostname>.local.
+// An absent Origin is allowed — curl and anything scripted have no reason to send one. A
+// present one is compared against the Host header rather than a fixed name, because the UI
+// is reached both by IP and as <hostname>.local.
 bool WebUi::sameOrigin() {
   if (!_server.hasHeader("Origin")) {
     return true;
@@ -148,10 +137,8 @@ void WebUi::handleControls() {
   _server.send_P(200, "text/html", CONTROLS_HTML);
 }
 
-// Every RF address this device knows about somebody else's remote leaves through here and
-// nowhere else. Deliberately not folded into /api/state, which both open pages poll without
-// a password: an address is the credential of a motor, and this repository already has one
-// recorded incident of credentials reaching an unauthenticated endpoint.
+// **Every foreign RF address leaves through here and nowhere else.** Not folded into
+// /api/state, which the open pages poll: an address is the credential of a motor.
 void WebUi::handleHeard() {
   if (!settingsAuthorised()) {
     return;
@@ -203,8 +190,7 @@ void WebUi::handleHeard() {
     _server.sendContent(chunk);
   }
 
-  // The remote names, so the page can offer "Office Shutters" rather than "4". Home
-  // Assistant publishes them; this is display only, exactly as everywhere else.
+  // Display only, as everywhere else: every internal path is the index.
   _server.sendContent("],\"names\":[");
   for (uint8_t i = 0; i < _remotes.count(); i++) {
     snprintf(chunk, sizeof(chunk), "%s\"", i == 0 ? "" : ",");
@@ -216,8 +202,7 @@ void WebUi::handleHeard() {
   _server.sendContent("");
 }
 
-// Zero minutes stops. Anything else starts or extends the window — extending rather than
-// restarting, so pressing the button twice mid-walk cannot drop a frame.
+// Zero stops; anything else starts or extends without restarting the radio mid-frame.
 void WebUi::handleArm() {
   if (!sameOrigin() || !settingsAuthorised()) {
     return;
@@ -251,10 +236,6 @@ void WebUi::handleControlSave() {
   ctl::Control control = {};
   control.address = (uint32_t)strtoul(_server.arg("address").c_str(), nullptr, 10) & 0xFFFFFFu;
 
-  // The name reaches two JSON documents — the retained payload and /api/heard — and one of
-  // them is assembled with snprintf rather than a serialiser. A quote in it would produce a
-  // page that will not parse and a control nobody can edit any more, so the characters that
-  // could do that never get stored in the first place.
   const String requested = _server.arg("name");
   uint8_t kept = 0;
   for (uint16_t i = 0; i < requested.length() && kept < ctl::NAME_LEN - 1; i++) {
@@ -278,10 +259,8 @@ void WebUi::handleControlSave() {
   while (at < (int)drives.length()) {
     const int comma = drives.indexOf(',', at);
     const int end = comma < 0 ? drives.length() : comma;
-    // strtol with an end pointer, not toInt(): toInt() reads anything non-numeric as 0, so
-    // one stray separator would make the control claim it drives remote 0 — retained,
-    // surviving reboots and replacement boards, rewriting the first cover's state on every
-    // press of that handheld. handleSend() refuses toInt() fifty lines down for this reason.
+    // Not toInt(): it reads anything non-numeric as 0, so one stray separator would make the
+    // control claim it drives remote 0 — retained, and surviving replacement boards.
     const String piece = drives.substring(at, end);
     char *stop = nullptr;
     const long index = strtol(piece.c_str(), &stop, 10);
@@ -292,8 +271,8 @@ void WebUi::handleControlSave() {
   }
 
   if (!_mqtt.saveControl(control)) {
-    // Not a formality. The retained topic is the only durable copy, and reporting success
-    // for a save the broker never took would lose an hour of walking at the next restart.
+    // The retained topic is the only durable copy: reporting success for a save the broker
+    // never took would lose an hour of walking at the next restart.
     _server.send(503, "text/plain", "the broker did not accept it — nothing was saved\n");
     return;
   }
@@ -314,9 +293,7 @@ void WebUi::handleControlForget() {
   _server.send(200, "text/plain", "forgotten\n");
 }
 
-// Drops a sighting without naming it — the neighbour's remote, or a stray frame that
-// survived the checksum. It comes back if it is heard again, which is the right behaviour:
-// this is a work list, not a block list.
+// It comes back if heard again: this is a work list, not a block list.
 void WebUi::handleControlIgnore() {
   if (!sameOrigin() || !settingsAuthorised()) {
     return;
@@ -326,11 +303,8 @@ void WebUi::handleControlIgnore() {
   _server.send(200, "text/plain", "dropped\n");
 }
 
-// The last intervals the decoder was fed, oldest first, as plain text.
-//
-// This is the tool for the one question the counters cannot answer: a decoder that rejects
-// everything and a radio that hears nothing look identical from outside, and the difference
-// is visible in about twenty numbers.
+// The tool for the one question the counters cannot answer: a decoder rejecting everything
+// and a radio hearing nothing look identical from outside.
 void WebUi::handleCapture() {
   if (!settingsAuthorised()) {
     return;
@@ -351,10 +325,8 @@ void WebUi::handleCapture() {
   }
   _server.sendContent("");
 
-  // Re-arming is opt-in, and it has to be. A frozen capture is often the only artefact of a
-  // failure somebody had to press a remote to produce, and a reload, a back button, a second
-  // reader or a link prefetch would otherwise wipe it with no way back but asking them to do
-  // it again.
+  // Opt-in: a frozen capture is often the only artefact of a failure somebody had to press a
+  // remote to produce, and a reload or a prefetch would wipe it.
   if (_server.hasArg("rearm")) {
     _receiver.rearmCapture();
   }
@@ -680,9 +652,7 @@ void WebUi::handleStatus() {
     _server.sendContent(line);
   }
 
-  // What the receiver is doing, always — not only when it is armed. A receiver that has
-  // muted itself, or that is hearing nothing because it was never started, looks exactly
-  // like a quiet house from every other angle.
+  // Always, not only when armed: a muted receiver and a quiet house look identical.
   const Receiver::Stats rx = _receiver.stats();
   snprintf(line, sizeof(line),
            "receiver: %s  %lu edges/s  %lu frames  %lu presses  %u known\n",

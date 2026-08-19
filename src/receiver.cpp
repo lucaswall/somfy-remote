@@ -7,56 +7,34 @@
 
 // --- the interrupt half -------------------------------------------------------------------
 //
-// Everything below the next divider runs in interrupt context and must live in IRAM: the
-// record store programs flash on every press, and the instruction cache is off while it
-// does. A handler in flash crashes only while flash happens to be busy, which is the
-// hardest possible failure to reproduce.
+// **Everything down to the next divider runs in interrupt context and must stay in IRAM.**
+// The record store programs flash on every press and the instruction cache is off while it
+// does, so a handler in flash crashes only while flash happens to be busy.
 
-// 256 entries is a kilobyte, and covers about 250 ms of a real press at its ~1 kHz edge
-// rate — a press is five frames over 800 ms, so a stall costs frames rather than the press.
-// It deliberately does not cover the longest stall this firmware has: a blocking broker
-// reconnect costs seconds, and a press lost to that window had nowhere to be published
-// anyway. Sizing for it would buffer events that get thrown away at the far end.
+// A kilobyte, ~250 ms of a press. Deliberately not sized for this firmware's longest stall —
+// a blocking broker reconnect costs seconds, and a press lost to that had nowhere to be
+// published anyway.
 #define RING_SIZE 256
 
-// Below this an interval is not a symbol. Somfy's shortest is 640 µs, and the datasheet
-// promises 37-38.5 ns glitches on this pin in asynchronous serial mode, "occurring
-// infrequently and with random periods".
-//
-// The rejected edge deliberately does *not* update the last-edge stamp, so a glitch is
-// absorbed into the interval it interrupted rather than splitting it in two. Note what this
-// is and is not: it decimates a noise storm rather than suppressing it — edges arriving
-// every 200 µs are rejected twice and accepted on the third — so arbitrary noise still
-// reaches the ring at up to one entry per 448 µs. The decoder is what rejects those.
+// Below this an interval is not a symbol; the datasheet promises 37-38.5 ns glitches on this
+// pin in asynchronous serial mode. A rejected edge does not update the last-edge stamp, so a
+// glitch is absorbed rather than splitting the interval. This decimates a storm rather than
+// suppressing it: noise still reaches the ring at up to one entry per GLITCH_US.
 #define GLITCH_US 448
 
-// The rate limit, as a budget rather than a number picked by feel: at most 2 % of the CPU
-// in this handler. One interrupt costs a shade under 4 µs, so 2 % of a 10 ms window is
-// fifty of them — 5 kHz sustained. Past that the receiver mutes itself and the main loop
-// backs it off, because a feature nobody is watching must not compete with the WiFi stack.
+// At most 2 % of the CPU in this handler: ~4 µs an interrupt, so fifty per 10 ms window.
 #define RATE_WINDOW_US 10000
 #define EDGE_BUDGET 50
 
-// ...but only when it stays over budget. This is the correction to a limiter that fired on
-// the first press it ever heard.
-//
-// A real transmission is loud, and an OOK receiver fills the silence between symbols with
-// whatever the AGC can find, so the interrupt rate during a press is far above the rate in
-// a quiet band — measured at six times it. Muting detaches the interrupt, so a limiter that
-// fires on one 10 ms window destroys the reception it exists to protect.
-//
-// What actually distinguishes the two is duration, not rate. A press is five frames over
-// about 800 ms. A noise storm is minutes. Two seconds of continuous over-budget windows is
-// comfortably longer than any press and far shorter than anything worth backing off from.
+// Sustained pressure, not a burst. A press is loud — an OOK receiver fills the gaps between
+// symbols with whatever the AGC finds — and muting detaches the interrupt, so a limiter that
+// fires on one window destroys the reception it protects. Two seconds is far longer than the
+// 800 ms a press lasts and far shorter than a noise storm.
 #define OVER_BUDGET_WINDOWS 200
 
-// Presses waiting to be acted on. Four, matching the burst slots: two people pressing at
-// once during the naming walk is the case that produces more than one in a single drain,
-// and it is the case the assembler already sizes for.
 #define PRESS_SLOTS 4
 
-// How long a heard press keeps the receiver listening. Long enough to walk to the far end
-// of a house and back before the window closes behind you.
+// Long enough to walk to the far end of a house and back before the window closes.
 #define PRESS_EXTENDS_MS (10UL * 60 * 1000)
 
 static volatile uint32_t ringEntries[RING_SIZE];
@@ -74,8 +52,8 @@ static volatile uint32_t isrRingWrites = 0;
 static volatile uint32_t isrOverflows = 0;
 static uint8_t isrPin = 0;
 
-// Reads the GPIO input register directly rather than calling digitalRead(): one load, no
-// call, and no question about whether the core put that function in IRAM.
+// Reads the GPIO register directly rather than calling digitalRead(): no question about
+// whether the core put that function in IRAM.
 static void IRAM_ATTR onEdge() {
   const uint32_t now = micros();
   isrInterrupts++;
@@ -83,18 +61,14 @@ static void IRAM_ATTR onEdge() {
     return;
   }
 
-  // The rate check counts *interrupts*, not accepted edges, and so has to come before the
-  // glitch filter. A storm of sub-symbol noise is invisible past the filter and still costs
-  // the whole CPU bill; counting after it would report a quiet ring while the SDK starved.
+  // Counts interrupts, not accepted edges, so it must precede the glitch filter: sub-symbol
+  // noise is invisible past the filter and still costs the whole CPU bill.
   if ((uint32_t)(now - isrWindowStart) >= RATE_WINDOW_US) {
     if (isrWindowEdges > isrPeakRate) {
       isrPeakRate = isrWindowEdges;
     }
-    // Leaky rather than consecutive. One busy window in a quiet minute says somebody pressed
-    // a button, and that is the opposite of a reason to stop listening — but a storm that
-    // straddles the budget, which is exactly what this board's ambient noise does, would
-    // never escalate at all if a single window at or under budget reset the count to zero.
-    // Decaying instead means sustained pressure still accumulates and a burst still does not.
+    // Leaky, not consecutive: a storm that straddles the budget would never escalate if one
+    // window at or under it reset the count, while a decay still ignores a lone burst.
     if (isrWindowEdges > EDGE_BUDGET) {
       isrOverBudget++;
     } else if (isrOverBudget > 0) {
@@ -114,17 +88,14 @@ static void IRAM_ATTR onEdge() {
   }
   isrLastEdge = now;
 
-  // The producer writes head and the consumer writes tail, so a full ring drops the newest
-  // entry rather than advancing tail from an interrupt. The stream is broken either way and
-  // the decoder gives up on the frame; a data race would not be so polite.
+  // Producer writes head, consumer writes tail — so a full ring drops the newest rather than
+  // advancing tail from an interrupt. The stream is broken either way; a race would not be.
   const uint16_t next = (uint16_t)((ringHead + 1) % RING_SIZE);
   if (next == ringTail) {
     isrOverflows++;
     return;
   }
-  // The level rides in bit 0. One microsecond of resolution is nothing against a 640 µs
-  // symbol, and carrying the level is what lets the decoder notice a lost edge — levels
-  // alternate by construction, so a repeat means one went missing.
+  // Level in bit 0; a microsecond of resolution is nothing against a 640 µs symbol.
   ringEntries[ringHead] = (now & ~1u) | (GPIP(isrPin) ? 1u : 0u);
   ringHead = next;
   isrRingWrites++;
@@ -143,8 +114,7 @@ bool Receiver::arm(uint16_t minutes) {
     return false;
   }
 
-  // Only ever forward. Tapping "15 min" to top up an hour that is already running used to
-  // cut it to fifteen, which is the opposite of what the button says.
+  // Only ever forward, so topping up a longer window cannot shorten it.
   const uint32_t until = millis() + (uint32_t)minutes * 60000UL;
   if (!_armed || (int32_t)(until - _expiresAt) > 0) {
     _expiresAt = until;
@@ -157,8 +127,7 @@ bool Receiver::arm(uint16_t minutes) {
   _cooling = false;
   _backoffMs = 1000;
   _decoder.reset();
-  // A transmission in progress is the one case where not attaching now is correct: resume()
-  // does it when the radio comes back.
+  // Mid-transmission is the one case where not attaching is correct; resume() does it.
   if (!_suspended && !attach()) {
     _armed = false;
     return false;
@@ -173,7 +142,7 @@ void Receiver::disarm() {
   }
   _armed = false;
   _cooling = false;
-  _edgeRate = 0;   // nothing is being counted, so reporting the last figure would be a lie
+  _edgeRate = 0;   // nothing is counting it any more
   detach();
   logLine("receiver  : stopped listening");
 }
@@ -186,9 +155,9 @@ uint32_t Receiver::secondsLeft() const {
   return (int32_t)(_expiresAt - now) > 0 ? (uint32_t)(_expiresAt - now) / 1000 : 0;
 }
 
-// The pin turns round in here, and the order is the whole safety argument: the chip's
-// driver is 3-stated before the ESP's is switched on, and the ESP's is switched off before
-// the chip's comes back. Two push-pull outputs on one wire is a short.
+// **The pin turns round here, and the order is the safety argument.** The chip's driver is
+// 3-stated before the ESP's is switched on, and off before the chip's comes back; two
+// push-pull outputs on one wire is a short.
 bool Receiver::attach() {
   if (_attached) {
     return true;
@@ -196,10 +165,7 @@ bool Receiver::attach() {
   pinMode(_dataPin, INPUT);
   if (!_radio.receive()) {
     logError("receiver  : CC1101 would not enter receive");
-    // receive() has already written IOCFG0 = serial data and strobed SRX, so the chip is
-    // driving GDO0 whatever MARCSTATE says. Taking the pin back without releasing it first
-    // is the one short INV-1 exists to forbid, and this was the only exit in the file that
-    // did it.
+    // receive() has already strobed SRX, so the chip drives GDO0 whatever MARCSTATE says.
     _radio.release();
     digitalWrite(_dataPin, LOW);
     pinMode(_dataPin, OUTPUT);
@@ -214,8 +180,7 @@ bool Receiver::attach() {
   ringTail = ringHead;
   _haveLastEntry = false;
   _decoder.reset();
-  // The AGC settles for a few milliseconds after entering receive and manufactures edges
-  // while it does. Ignoring them is cheaper than teaching the decoder to.
+  // The AGC manufactures edges for a few milliseconds after entering receive.
   _blankUntil = millis() + 5;
   _cleanSince = millis();
 
@@ -231,12 +196,11 @@ void Receiver::detach() {
   detachInterrupt(digitalPinToInterrupt(_dataPin));
   _attached = false;
   _radio.release();
-  digitalWrite(_dataPin, LOW);   // written before the driver is enabled, never after
-  pinMode(_dataPin, OUTPUT);     // an idle high would key the transmitter continuously
+  digitalWrite(_dataPin, LOW);   // before the driver is enabled: an idle high keys the PA
+  pinMode(_dataPin, OUTPUT);
 }
 
-// Suspend and resume bracket a transmission, and resume restores what suspend found: a
-// receiver that was disarmed stays disarmed, and one that was cooling stays cooling.
+// Resume restores what suspend found: disarmed stays disarmed, cooling stays cooling.
 void Receiver::suspend() {
   _suspended = true;
   detach();
@@ -248,9 +212,8 @@ void Receiver::resume() {
     return;
   }
   if (!attach()) {
-    // A transmission that leaves the chip unable to return to receive is the radio failing,
-    // not the receiver. Cool off and retry on the backoff; the main loop's own radio retry
-    // will have re-run begin() by then if the chip really has gone.
+    // The radio failing, not the receiver. Retry on the backoff; main's own radio retry will
+    // have re-run begin() by then if the chip really has gone.
     _cooling = true;
     _muteUntil = millis() + _backoffMs;
   }
@@ -272,7 +235,6 @@ void Receiver::loop() {
     applyEdges();
   }
 
-  // A rate readout that a human can act on, sampled rather than computed per edge.
   if (elapsed(now, _lastRateAt, 1000)) {
     const uint32_t total = isrInterrupts;
     _edgeRate = total - _lastRateCount;
@@ -281,9 +243,8 @@ void Receiver::loop() {
   }
 }
 
-// The flag is consumed in the same step that acts on it. Left set, this branch re-fires
-// every pass — thousands of times a second — pushing the retry further away each time and
-// saturating the backoff within milliseconds, and the receiver never comes back.
+// **The mute flag is consumed in the same step that acts on it.** Left set, this branch
+// re-fires every pass, pushing the retry further away each time until the receiver is dead.
 void Receiver::enforceRateLimit(uint32_t now) {
   if (_attached && isrMuted) {
     detach();
@@ -299,10 +260,8 @@ void Receiver::enforceRateLimit(uint32_t now) {
 
   if (_cooling && (int32_t)(now - _muteUntil) >= 0) {
     if (!attach()) {
-      // The chip would not go back into receive. Stay in cooling and let the backoff carry
-      // the retry, rather than sitting armed with nothing listening — a receiver that has
-      // silently stopped receiving is indistinguishable from a quiet house, which is the
-      // whole reason the counters on /status exist.
+      // Stay cooling rather than sit armed with nothing listening: a receiver that has
+      // silently stopped is indistinguishable from a quiet house.
       _muteUntil = now + _backoffMs;
       _backoffMs = _backoffMs * 2 > 60000UL ? 60000UL : _backoffMs * 2;
       return;
@@ -311,8 +270,7 @@ void Receiver::enforceRateLimit(uint32_t now) {
     return;
   }
 
-  // A clean minute pays the escalation back, so one noisy afternoon does not leave the
-  // receiver on a sixty-second retry for the rest of the week.
+  // A clean minute pays the escalation back.
   if (_attached && elapsed(now, _cleanSince, 60000)) {
     _backoffMs = 1000;
     _cleanSince = now;
@@ -332,22 +290,20 @@ void Receiver::applyEdges() {
       continue;
     }
 
-    // An interval needs two edges, and the second one may not have arrived yet — so the
-    // boundary is carried across calls rather than left in the ring for a second read.
+    // An interval needs two edges and the second may not have arrived, so the boundary is
+    // carried across calls rather than left in the ring.
     if (!_haveLastEntry) {
       _lastEntry = entry;
       _haveLastEntry = true;
       continue;
     }
 
-    // The level recorded at an edge is the level *after* it, so the interval that just
-    // ended was held at the level of the entry before this one.
+    // An edge records the level *after* it, so the interval that just ended was held at the
+    // level of the entry before this one.
     const uint32_t interval = (entry & ~1u) - (_lastEntry & ~1u);
     const bool high = (_lastEntry & 1u) != 0;
     _lastEntry = entry;
 
-    // Clamped rather than dropped: an interval longer than a frame contains is a gap, and
-    // seeing where the gaps fall is half of what makes a capture readable.
     const uint16_t clamped = interval > 0x7FFF ? 0x7FFF : (uint16_t)interval;
     if (!_captureFrozen) {
       _capture[_captureHead] = (uint16_t)(clamped | (high ? 0x8000u : 0u));
@@ -363,9 +319,8 @@ void Receiver::applyEdges() {
     // Restart the capture where the data does. A sync burst is sixteen intervals of nothing
     // anybody needs to see, and letting it share the buffer with the frame means the frame
     // is cut off at the far end — which reads exactly like corruption and is not.
-    // Consumed unconditionally and acted on conditionally: latched through a freeze, the
-    // flag would fire on whatever interval happened to arrive after somebody read the
-    // capture, and present it as a frame boundary.
+    // Consumed unconditionally, acted on conditionally: latched through a freeze it would
+    // fire on whatever arrived after a read and present it as a frame boundary.
     const bool frameStarted = _decoder.takeFrameStart();
     if (frameStarted && !_captureFrozen) {
       _captureHead = 0;
@@ -373,11 +328,6 @@ void Receiver::applyEdges() {
       _capture[_captureHead++] = (uint16_t)(clamped | (high ? 0x8000u : 0u));
     }
 
-    // A frame that ran to full length and only then failed its checksum is the one thing on
-    // this pin worth stopping to look at. Not any abandoned frame: noise finds a false sync
-    // every few seconds and gives up within a handful of intervals, and a capture that
-    // freezes on the first of those never sees the press it was armed for. Reading the
-    // capture re-arms it.
     if (_decoder.takeChecksumFailure()) {
       _captureFrozen = true;
     }
@@ -386,9 +336,8 @@ void Receiver::applyEdges() {
     }
     _frames++;
 
-    // Impossible: the radio is in receive or transmit, never both, so this device cannot
-    // hear itself. If it happens, something else is transmitting as us or the mode switch
-    // is broken, and both are worth a fault rather than a shrug. The address is not logged:
+    // Impossible — the radio is in one mode at a time, so this device cannot hear itself.
+    // If it happens, something else is transmitting as us. The address is not logged:
     // /log and /errors need no password.
     bool ours = false;
     for (uint8_t i = 0; i < _remotes.count(); i++) {
@@ -407,10 +356,8 @@ void Receiver::applyEdges() {
     if (_assembler.feed(heard, now, &press)) {
       _presses++;
       recordSighting(press);
-      // Full means the oldest goes, not the newest. The ISR ring drops the newest because
-      // its producer cannot safely touch the consumer's index; both ends of this one run in
-      // the main loop, and the press that describes where a shutter finally came to rest is
-      // the last one, not the first.
+      // Oldest goes, unlike the ISR ring: both ends run in the main loop here, and the press
+      // that says where a shutter came to rest is the last one.
       const uint8_t next = (uint8_t)((_pressHead + 1) % PRESS_SLOTS);
       if (next == _pressTail) {
         _pressTail = (uint8_t)((_pressTail + 1) % PRESS_SLOTS);
@@ -425,10 +372,8 @@ void Receiver::applyEdges() {
 void Receiver::recordSighting(const SomfyPress &press) {
   const uint32_t now = millis();
 
-  // A press is the signal that somebody is still working, and during the phoneless naming
-  // walk it is the only signal there is — the page is in a pocket and generates nothing.
-  // Without this the window expires mid-house and every control pressed afterwards is heard
-  // by nobody, discovered only by a list missing rows nobody knew were missing.
+  // During a naming walk with the page in a pocket, a press is the only sign anybody is
+  // still working; without this the window expires mid-house.
   const uint32_t extended = now + PRESS_EXTENDS_MS;
   if (_armed && (int32_t)(extended - _expiresAt) > 0) {
     _expiresAt = extended;

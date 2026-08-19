@@ -7,14 +7,11 @@
 
 class Receiver;
 
-// The radio: a CC1101 in asynchronous OOK mode, with the RTS waveform bit-banged onto its
-// data pin to transmit and the demodulated data read back off the same pin to receive.
-// Nothing else touches the chip.
+// A CC1101 in asynchronous OOK mode: the RTS waveform bit-banged onto its data pin to
+// transmit, the demodulated data read back off the same pin to receive.
 //
-// **One wire, two directions, never both at once.** The chip drives GDO0 while receiving
-// and the ESP drives it while transmitting, so every transmission stops the receiver first
-// and starts it again afterwards — on every exit path, including the one where the chip
-// refuses to enter transmit at all.
+// **One wire, two directions, never both at once.** Every transmission stops the receiver
+// first and restarts it on every exit path, including the one where the chip refuses TX.
 class SomfyRadio {
  public:
   // dataPin drives the chip's GDO0. It is the only line the waveform goes out on, and it
@@ -24,22 +21,16 @@ class SomfyRadio {
   bool begin();
   bool ready() const { return _ready; }
 
-  // The receiver has to be silenced for the length of a transmission, and it owns the pin
-  // direction. Told rather than asked, so that no caller can forget: a command arriving
-  // while the chip is listening would otherwise put two push-pull drivers on one wire.
+  // Told rather than asked, so no caller can forget: a command arriving while the chip is
+  // listening would put two push-pull drivers on one wire.
   void listener(Receiver *receiver) { _receiver = receiver; }
 
-  // Proves the GDO0 wire is actually connected, with no RF involved at all: the chip drives
-  // that pin to a known level and the ESP reads it back, twice, both ways round.
-  //
-  // docs/hardware.md used to say this was the one wire the chip could not check, and that
-  // was true for as long as only the ESP ever drove it. It is not true any more, and it
-  // matters more now: transmit fails visibly, because a shutter does not move, while
-  // receive on a broken wire looks exactly like a quiet house.
+  // Proves the GDO0 wire is connected, with no RF involved: the chip drives it to a known
+  // level both ways round and the ESP reads it back. Worth having because transmit fails
+  // visibly — a shutter does not move — while receive on a broken wire looks like silence.
   bool testDataPin();
 
-  // Receive-side pass-throughs, for the receiver. Here rather than on the driver because
-  // the driver has no idea a pin is being shared.
+  // Here rather than on the driver, which has no idea the pin is shared.
   bool receive() { return _cc1101.receive(); }
   void release() { _cc1101.release(); }
 

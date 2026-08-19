@@ -7,11 +7,35 @@ outranks everything here.
 
 - Write the smallest thing that does the job. No abstraction, flag, or layer for a use
   case that does not exist yet.
-- Comments explain **why**, not what. A comment restating the code is noise; a comment
-  giving the reason for a pin choice, a timing constant, or a workaround is required.
-  One line where one line does. A file over ~20% comment lines is usually explaining
-  itself twice — a build flag needs a clause, not a paragraph.
 - No commented-out code, ever. Git remembers it.
+
+### Comments earn their place or they go
+
+A comment is worth writing for exactly four reasons:
+
+1. an edge case the code cannot show on its own,
+2. something counter-intuitive, where the obvious reading is wrong,
+3. a warning that something must not be changed without knowing why,
+4. a constant or a pin choice whose value came from somewhere outside the file.
+
+Everything else is bloat, and **bloat costs the same as a stale document or a dead
+function**: it is one more thing a reader has to check against the code, and one more thing
+that silently stops being true.
+
+Three kinds show up again and again and are always wrong:
+
+- **History.** "An earlier version did X", "this used to be Y", "the correction to a bug
+  that…". `git log` and `git blame` hold this, and hold it accurately. A comment describing
+  a bug that no longer exists describes nothing.
+- **The obvious.** Anything a reader gets from the line below it. If the code says
+  `_edgeRate = 0`, it does not need a sentence saying the rate is cleared.
+- **Over-fitting a fix.** A paragraph justifying a change, written while making it, at the
+  point where it was made. The change needs a commit message, not a monument. Ask what a
+  reader who has never seen the bug needs — usually one clause, often nothing.
+
+One line where one line does. **A file over ~20 % comment lines is explaining itself
+twice**; measure it (`grep -cE '^\s*(//|/\*|\*)'`) rather than guessing, and cut rather
+than justify.
 - Delete dead things in the same commit that makes them dead — unused files, headers
   nothing includes, `make` targets nothing runs, obsolete instructions in docs. A future
   agent cannot tell a deliberate leftover from an oversight, and will preserve both.

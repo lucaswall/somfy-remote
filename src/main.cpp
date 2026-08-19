@@ -59,11 +59,8 @@ static uint32_t heapLowWater = 0;
 static const uint32_t HEALTH_MS = 5UL * 60 * 1000;
 static uint32_t lastHealth = 0;
 
-// How fast the loop is turning, averaged over each health interval. It exists to answer one
-// question that cannot be answered any other way: what the receiver's interrupt handler is
-// costing. An ISR firing a few hundred times a second is invisible in every other number on
-// this board, and a comparison against the same figure with the receiver disarmed is the
-// only honest way to price it.
+// The only way to price the receive interrupt: an ISR firing a few hundred times a second
+// is invisible in every other number here. Compare it armed against disarmed.
 static uint32_t loops = 0;
 
 static void banner() {
@@ -86,15 +83,14 @@ void setup() {
   delay(200);
   banner();
 
-  // Before radio.begin(), because begin() resets the chip and has to be able to stop the
-  // receiver while IOCFG0 is briefly a divided crystal clock on the data pin.
+  // Before radio.begin(), which must be able to stop the receiver while SRES leaves a
+  // divided crystal clock on the data pin.
   receiver.begin(PIN_DATA);
   radio.listener(&receiver);
 
   if (radio.begin()) {
     logLine("radio     : CC1101 ready on 433.42 MHz");
-    // Transmit fails loudly — a shutter does not move. Receive on a broken data wire fails
-    // silently, and looks exactly like a house where nobody is pressing anything.
+    // Receive on a broken data wire fails silently, unlike transmit.
     if (radio.testDataPin()) {
       logLine("radio     : GDO0 wire verified both ways");
     } else {
@@ -132,13 +128,10 @@ void loop() {
   receiver.loop();   // decodes what the interrupt handler recorded; inert unless armed
   store.loop();      // compaction, never on the press path
 
-
   if (elapsed(now, lastHealth, HEALTH_MS)) {
     lastHealth = now;
-    // Written to fit LOG_LINE_LEN. It did not, and the overflow took the loop rate and the
-    // DEGRADED flag off the end of every copy — the ring's and the serial console's, since
-    // logLine() prints the buffer it formatted into. Terse on purpose: three "up/down"
-    // words and the word "queued" were most of the excess.
+    // Terse because it must fit LOG_LINE_LEN: logLine() prints the buffer it formats into,
+    // so anything longer is truncated on the serial console as well as in the ring.
     logLine("health    : heap %lu/%lu rssi %d w%c m%c r%c q%u f%u store %c/%u %lu/s%s",
             (unsigned long)ESP.getFreeHeap(), (unsigned long)heapLowWater, net.rssi(),
             net.connected() ? '+' : '-', mqtt.connected() ? '+' : '-',

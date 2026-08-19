@@ -11,26 +11,17 @@
 // The device's own page: state, the two log rings, and the only place configuration is
 // edited.
 //
-// Deliberately the synchronous server bundled with the core rather than an async one. The
-// payload is under a kilobyte, the radio blocks for most of a second on every press, and a
-// request that arrives mid-transmission simply waits — none of which argues for a second
-// TCP stack.
+// The synchronous server from the core, not an async one: the payload is under a kilobyte
+// and the radio already blocks for most of a second on every press.
 //
-// **Two pages, one boundary.** `/` is operation — up, stop, down, and state. It is exactly
-// what Home Assistant already exposes, so it is open: a page that asks for a password
-// before it will say whether a shutter is shut is a page nobody opens.
+// **Three pages, one boundary.** `/` is operation — exactly what Home Assistant exposes, so
+// it needs no password; a page that asks for one before saying whether a shutter is shut is
+// a page nobody opens. `/settings` is administration, and the boundary is real: Prog enrols
+// a remote at a motor and removing one takes three entities with it.
 //
-// `/settings` is administration — pairing, adding and removing remotes — and the browser
-// asks for a password when it is opened. That is a real boundary rather than decoration:
-// Prog enrols an emulated remote at a motor, and removing one takes three Home Assistant
-// entities with it.
-//
-// `/controls` sits behind the same password and is the tool for teaching the bridge which
-// physical handhelds and wall buttons exist. A separate page rather than a section of
-// settings because it is used differently: walking around a house with a phone, pressing a
-// button and naming whatever appears. It needs the password for a different reason too —
-// the addresses on it are the RF credentials of the motors in this house, and they must not
-// reach `/api/state`, which both open pages already poll.
+// `/controls` is the tool for teaching the bridge which physical handhelds exist. A separate
+// page because it is used differently — walking a house with a phone — and behind the
+// password for a different reason: the addresses on it are the credentials of real motors.
 class WebUi {
  public:
   WebUi(Remotes &remotes, Store &store, HaMqtt &mqtt, Net &net, Receiver &receiver,

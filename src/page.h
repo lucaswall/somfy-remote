@@ -12,11 +12,9 @@
 // opens. Settings is the admin surface: pairing, adding and removing remotes. The browser
 // asks for a password the moment that page is opened.
 //
-// Controls is a third page and a sibling of settings rather than a section inside it. Same
-// password, different job: settings is administration done sitting down, and this is a tool
-// used walking around a house with a phone, pressing a button and naming what appears. It
-// is behind the password because the addresses on it are the RF credentials of the motors
-// in this house and the two log endpoints are already open.
+// Controls is a sibling of settings, not a section of it: same password, different job —
+// this one is used walking around a house with a phone. Behind the password because the
+// addresses on it are the credentials of real motors.
 
 static const char PAGE_CSS[] PROGMEM = R"CSS(
 :root{--bg:#0e1116;--card:#171c24;--line:#262d38;--fg:#e6eaf0;--dim:#8b95a5;
@@ -319,17 +317,9 @@ setInterval(poll, 3000);
 </script></body></html>
 )HTML";
 
-// The naming tool. Press a control anywhere in the house and its row arrives at the top
-// within a second, "just now"; type a name, tick the shutters it drives, save.
-//
-// There is deliberately no per-control mode to arm — nothing to point at the wrong thing,
-// and no order to remember. Pressing the same button twice does not make a second row, it
-// increments a count. Listening is one house-wide window, extended by any press heard, so
-// the walk cannot expire underneath somebody who left their phone in a pocket.
-//
-// The unknown list sorts newest-first for the walk with a phone, and oldest-first for the
-// other way of doing it: press everything in a systematic order, sit down, and name the
-// list top to bottom in the order you walked.
+// Press a control anywhere in the house and its row arrives at the top within a second.
+// No per-control mode to arm, so nothing can be pointed at the wrong thing; the two sort
+// orders support naming as you walk, or walking first and naming the list afterwards.
 static const char CONTROLS_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8">
@@ -371,16 +361,13 @@ const $ = id => document.getElementById(id);
 const CMD = {1:'My',2:'Up',3:'My+Up',4:'Down',5:'My+Down',6:'Up+Down',8:'Prog',9:'Sun',10:'Flag'};
 let names = [], newest = true;
 
-// The list is rebuilt once a second, and rebuilding it under somebody's fingers wipes the
-// name they are half-way through typing and unticks the boxes they just ticked. So the rows
-// are only replaced when the *set* of rows changes; otherwise the live fields are left alone
-// and just the timestamps are refreshed. The operation page learned this same lesson.
+// Rebuilding once a second under somebody's fingers wipes the name they are typing, so rows
+// are replaced only when the *set* of them changes.
 let unknownKey = '', knownKey = '';
 const focused = () => document.activeElement && document.activeElement.tagName === 'INPUT';
 
-// Every name on this page came from somewhere else — a person typing into the form, or Home
-// Assistant over MQTT — and both land in innerHTML. The device-side filter drops quotes and
-// backslashes but not angle brackets, and the MQTT path applies no filter at all.
+// Every name here came from a form or from MQTT and lands in innerHTML; the device-side
+// filter drops quotes but not angle brackets, and the MQTT path filters nothing.
 const esc = t => String(t).replace(/[&<>"']/g, c =>
   ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
@@ -388,9 +375,7 @@ const ago = ms => ms < 2000 ? 'just now'
   : ms < 60000 ? Math.round(ms/1000) + 's ago'
   : ms < 3600000 ? Math.round(ms/60000) + 'm ago' : Math.round(ms/3600000) + 'h ago';
 
-// `last` and `first` are AGES in milliseconds, not timestamps — so newest-first is
-// *ascending* last, and the walk order is *descending* first. Both were the wrong way round,
-// which put the control somebody was standing in front of at the bottom of the list.
+// `last` and `first` are AGES, not timestamps: newest-first is *ascending* last.
 function flip(){ newest = !newest; $('sortbtn').textContent = newest ? 'newest first' : 'walk order'; draw(last); }
 
 function ticks(addr, drives){
@@ -398,9 +383,8 @@ function ticks(addr, drives){
     ${drives & (1<<i) ? 'checked' : ''}>${esc(n||('Remote '+i))}</label>`).join('');
 }
 
-// Addresses that differ by one are almost always channels of the same handheld. It is a
-// hint for the person naming them and nothing more: which shutter a channel drives has no
-// relation to its number, and guessing that would be worse than leaving it blank.
+// Adjacent addresses are usually channels of one handheld. A hint only: which shutter a
+// channel drives has no relation to its number.
 function neighbour(list, c){
   return list.some(o => o.a !== c.a && Math.abs(o.a - c.a) <= 2)
     ? '<p class="meta">looks like a channel of the same remote as its neighbour</p>' : '';
@@ -419,8 +403,6 @@ function draw(s){
   $('n').textContent = u.length;
   $('empty').style.display = u.length ? 'none' : '';
 
-  // Ages change every second; the set of addresses does not. Only the second is a reason to
-  // throw away what somebody is typing.
   const uk = u.map(c=>c.a).join(',') + '|' + newest;
   for (const c of u) { const e = $('ago'+c.a); if (e) e.textContent = ago(c.last); }
   if (uk !== unknownKey && !focused()) { unknownKey = uk; $('unknown').innerHTML = u.map(c=>`
@@ -465,8 +447,6 @@ async function save(a){
   const d = [...document.querySelectorAll(`input[data-a="${a}"]:checked`)].map(e=>e.value).join(',');
   const r = await fetch(`/api/control/save?address=${a}&name=${encodeURIComponent(name)}&drives=${d}`,
                         {method:'POST'});
-  // A save that did not reach the broker is a save that is gone on the next restart, and
-  // the retained topic is the only durable copy of an hour of walking.
   if (!r.ok) alert('NOT saved: ' + (await r.text()));
   poll();
 }

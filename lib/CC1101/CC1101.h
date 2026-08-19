@@ -3,19 +3,12 @@
 #include <stdint.h>
 
 // Just enough CC1101 to hold the radio in asynchronous OOK mode while something else works
-// the data pin. No FIFO and no packet engine: Somfy RTS is a bit-banged waveform, so
-// everything the chip could do for us is bypassed in both directions.
+// the data pin. No FIFO and no packet engine: RTS is a bit-banged waveform.
 //
-// **GDO0 is shared, and only one side may drive it at a time.** The datasheet (SWRS061I
-// §27.1) allows the demodulated data out on GDO0, so receive needs no second wire — but in
-// receive the chip drives that pin and in transmit the ESP does. `release()` hands the pin
-// to the ESP by 3-stating the chip's driver, `receive()` takes it back. §11.2 says the chip
-// makes GDO0 an input while it is *transmitting*, which is why the deployed firmware has
-// driven it for years without harm; it says nothing about IDLE, and IDLE is where this
-// radio spends almost all of its life.
-//
-// Registers and values are the TI CC1101 datasheet's, and the transmit half is the
-// configuration the deployed bridge has been using since 2023 — see docs/hardware.md.
+// **GDO0 is shared and only one side may drive it at a time.** §27.1 allows the demodulated
+// data out on GDO0, so receive needs no second wire — but the chip drives that pin in
+// receive and the ESP drives it in transmit. release() hands it over, receive() takes it
+// back. Registers are the datasheet's; see docs/hardware.md.
 
 // Status registers, for the self-test.
 #define CC1101_PARTNUM 0x30

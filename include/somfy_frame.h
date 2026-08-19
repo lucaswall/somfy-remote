@@ -10,12 +10,9 @@
 #define SOMFY_FRAME_LEN 7
 #define SOMFY_FRAME_BITS 56
 
-// Byte 0. Upstream calls it an encryption key; it is neither secret nor checked by the
-// motor. What this firmware transmits is 0xA7, which is what every implementation in the
-// wild also transmits — but a real handheld does not hold it constant. Captures from a
-// dedicated RTS receiver show one remote sending 0xA1 then 0xA3 on consecutive presses,
-// and ESPSomfy-RTS transmits 0xA0 | (rollingCode & 0x0F). Only the high nibble is fixed,
-// which is all a receiver may test.
+// Byte 0, the so-called encryption key: neither secret nor checked by the motor. Every
+// transmitter sends 0xA7, but **a receiver may only test the high nibble** — real handhelds
+// vary the low one, sending 0xA1 then 0xA3 on consecutive presses.
 #define SOMFY_KEY 0xA7
 #define SOMFY_KEY_MASK 0xF0
 #define SOMFY_KEY_HIGH 0xA0
@@ -56,38 +53,32 @@ inline void somfyBuildFrame(SomfyCommand command, uint16_t rollingCode, uint32_t
   }
 }
 
-// What an overheard frame carries. The command is the raw nibble, not a SomfyCommand: a
-// handheld sends five values this firmware never transmits (docs/somfy-rts.md), and
-// narrowing them here would make a legitimate button press look like corruption.
+// The command is the raw nibble, not a SomfyCommand: a handheld sends five values this
+// firmware never transmits, and narrowing them would make a real press look like corruption.
 struct SomfyHeard {
   uint8_t command;
   uint16_t rollingCode;
   uint32_t address;
 };
 
-// The inverse of somfyBuildFrame(), and the only thing standing between the receiver and a
-// band full of doorbells. False means the bytes are not an RTS frame.
-//
-// The checksum is four bits, so one frame in sixteen of pure noise passes it. That is not a
-// defect to fix here — there is no more entropy in the protocol to check against — it is
-// why a press is only believed after two copies agree.
+// The inverse of somfyBuildFrame(). The checksum is four bits, so one frame in sixteen of
+// pure noise passes it — there is no more entropy in the protocol, which is why a press is
+// only believed after two copies agree.
 inline bool somfyParseFrame(const uint8_t *frame, SomfyHeard *out) {
-  // The high nibble only. Testing the whole byte would throw away fifteen of every sixteen
-  // real presses; the cost is that this test's rejection power drops from 1/256 to 1/16,
-  // which is why the two-copy rule compares address, rolling code *and* command.
+  // High nibble only — see SOMFY_KEY. Rejection power is therefore 1/16, not 1/256, which
+  // is why the two-copy rule compares address, rolling code *and* command.
   if ((frame[0] & SOMFY_KEY_MASK) != SOMFY_KEY_HIGH) {
     return false;
   }
 
-  // Undo the XOR chain backwards, from the end: each byte was XORed with the *already
-  // obfuscated* byte before it, so the source of every step is still intact ahead of us.
+  // Backwards from the end: each byte was XORed with the *already obfuscated* one before it,
+  // so the source of every step is still intact ahead of us.
   uint8_t plain[SOMFY_FRAME_LEN];
   plain[0] = frame[0];
   for (uint8_t i = SOMFY_FRAME_LEN - 1; i >= 1; i--) {
     plain[i] = (uint8_t)(frame[i] ^ frame[i - 1]);
   }
 
-  // A correct frame XORs down to zero across all fourteen nibbles, checksum included.
   uint8_t checksum = 0;
   for (uint8_t i = 0; i < SOMFY_FRAME_LEN; i++) {
     checksum ^= (uint8_t)(plain[i] ^ (plain[i] >> 4));

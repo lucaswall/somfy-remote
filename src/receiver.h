@@ -6,42 +6,22 @@
 #include "remotes.h"
 #include "somfy_decoder.h"
 
-// Hearing the handhelds already in the house.
+// Hearing the handhelds already in the house, so a shutter opened by hand stops reading
+// closed in Home Assistant.
 //
-// Everything Home Assistant shows about a cover is inferred from what this bridge believes
-// it sent. Somebody using a wall button is invisible, and the covers stay confidently wrong
-// until the next command from us. This is the half that listens.
-//
-// **It is inert until armed.** RTS shares 433 MHz with every doorbell and weather station
-// in the street, and an OOK receiver with no signal amplifies noise until the data line
-// toggles continuously — on a chip that is also running a WiFi stack, an unbounded edge
-// interrupt is a plausible way to starve the SDK. Arming is deliberate, bounded and
-// self-expiring, so a bridge nobody is teaching behaves exactly as it did before this
-// existed. Whether it can safely be left on for ever is a measurement, not an opinion.
-//
-// The interrupt handler timestamps edges into a ring and does nothing else. Decoding runs
-// in the main loop. Every reference implementation of this protocol decodes inside the
-// interrupt; they are not sharing a core with an SDK that drops its WiFi association when
-// starved.
+// **Inert until armed**, and the window expires by itself. An OOK receiver with no signal
+// amplifies noise until the data line chatters, and an unbounded edge interrupt on a chip
+// running WiFi is a way to starve the SDK. Whether it is safe left on for ever is a
+// measurement nobody has taken.
 
-// Unknown addresses waiting to be named. Forty because the naming walk may press every
-// control in the house before naming any of them — a dozen wall buttons and a couple of
-// multi-channel handhelds — and evicting the start of that walk would produce a list
-// missing rows nobody could know were missing. Twenty bytes each.
+// Forty, because a naming walk may press every control in the house before naming any of
+// them, and evicting the start of that walk loses rows nobody knows are missing.
 #define SIGHTING_SLOTS 40
 
-// A window onto what the air actually looks like: the last 192 intervals the decoder was
-// fed, as it was fed them. About a frame and a half — enough to see a sync burst, the
-// software sync and the start of the data, and enough to tell a remote whose timings differ
-// from ours apart from a receiver that is hearing noise between the symbols.
-//
-// Always running, and circular. A one-shot capture has to be armed before the thing worth
-// capturing happens, which is not a thing anybody can time from a web page; keeping the most
-// recent intervals means the answer is already there by the time somebody thinks to look.
-// Two bytes each, level in the top bit.
-//
-// It exists because a decoder that rejects everything and a radio that hears nothing produce
-// identical counters, and no amount of staring at those counters tells them apart.
+// The last intervals the decoder was fed, circular and always running — a one-shot capture
+// would have to be armed before the thing worth capturing, which nobody can time from a web
+// page. It exists because a decoder rejecting everything and a radio hearing nothing produce
+// identical counters. Two bytes each, level in the top bit.
 #define CAPTURE_SLOTS 192
 
 // What the bridge has heard from one address it does not know yet.
@@ -62,10 +42,8 @@ class Receiver {
   // it only records which wire to watch.
   void begin(uint8_t dataPin);
 
-  // Listen for `minutes`, then stop by itself. Arming again while armed extends the window
-  // rather than restarting anything, and any heard press extends it too — during a walk a
-  // press is the signal that somebody is still working, and the phoneless version of that
-  // walk produces no other.
+  // Listen for `minutes`, then stop. Arming again extends the window without restarting the
+  // radio, and a heard press extends it too; neither can shorten it.
   bool arm(uint16_t minutes);
   void disarm();
 
@@ -74,18 +52,14 @@ class Receiver {
 
   void loop();
 
-  // Called around a transmission. The radio cannot do both at once, and while the ESP is
-  // driving the data pin the chip must not be. Resume restores what suspend found: a
-  // disarmed receiver stays disarmed.
+  // Bracket a transmission: the radio cannot do both at once, and only one side may drive
+  // the data pin. Resume restores what suspend found.
   void suspend();
   void resume();
 
-  // Presses from controls this bridge has heard. Drained by whoever knows what to do with
-  // them, which is not this class.
   bool takePress(SomfyPress *out);
 
-  // The last N intervals, oldest first. Frozen automatically when a frame fails, because
-  // that is the only moment worth looking at; reading it re-arms.
+  // Oldest first. Frozen when a frame reaches full length and fails its checksum.
   uint16_t captureCount() const { return _captureFilled ? CAPTURE_SLOTS : _captureHead; }
   uint16_t captureAt(uint16_t i) const {
     return _capture[_captureFilled ? (uint16_t)((_captureHead + i) % CAPTURE_SLOTS) : i];
@@ -101,9 +75,7 @@ class Receiver {
   const Sighting &sighting(uint8_t i) const { return _sightings[i]; }
   void forgetSighting(uint32_t address);
 
-  // Diagnostics, and not optional ones. A receiver that has quietly muted itself looks
-  // exactly like a quiet house, which is the same failure the rolling code sensor exists
-  // to make visible.
+  // Not optional: a receiver that has quietly muted itself looks exactly like a quiet house.
   struct Stats {
     uint32_t interrupts;    // what the CPU actually paid for
     uint32_t ringWrites;    // what survived the glitch filter

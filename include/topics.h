@@ -147,8 +147,7 @@ inline void topicControlWildcard(char *out, size_t len, const char *deviceId) {
   snprintf(out, len, "%s/control/+", deviceId);
 }
 
-// Which address a control message is for. Exact, like the other two parsers: the wildcard
-// matches more than it should, and these are the RF credentials of a house.
+// Exact, like the other two parsers: the wildcard matches more than it should.
 inline bool addressFromControlTopic(const char *topic, const char *deviceId, uint32_t *out) {
   const size_t idLength = strlen(deviceId);
   if (strncmp(topic, deviceId, idLength) != 0) {
@@ -185,10 +184,8 @@ inline bool addressFromControlTopic(const char *topic, const char *deviceId, uin
   return true;
 }
 
-// "<deviceId>/control/<hex>/press" — a press heard from that control, published
-// **non-retained**. The only topic on this device that is not retained, and it has to be:
-// Home Assistant's MQTT event platform discards a retained payload as a replay, which is
-// correct — a button press that happened yesterday is not news to a broker reconnect.
+// **The only non-retained topic on this device**, and it has to be: Home Assistant's event
+// platform discards a retained payload as a replay.
 inline void topicControlPress(char *out, size_t len, const char *deviceId,
                               uint32_t address) {
   snprintf(out, len, "%s/control/%06lx/press", deviceId,

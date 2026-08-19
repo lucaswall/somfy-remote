@@ -28,9 +28,9 @@ static const uint8_t REG_MDMCFG2 = 0x12;
 static const uint8_t REG_MDMCFG1 = 0x13;
 static const uint8_t REG_MDMCFG0 = 0x14;
 static const uint8_t REG_MCSM0 = 0x18;
-// Datasheet §29 register map, and worth reading twice: these four are consecutive and it is
-// very easy to be off by one. FOCCFG 0x19, BSCFG 0x1A, AGCCTRL2 0x1B, AGCCTRL1 0x1C,
-// AGCCTRL0 0x1D, and 0x1E is WOREVT1 — nothing to do with the AGC at all.
+// **Check these against the datasheet register map, not against memory.** They are
+// consecutive, an off-by-one here is silent, and 0x1E is WOREVT1 rather than any AGC
+// register — so a shifted set configures the WOR timer and leaves the AGC at reset.
 static const uint8_t REG_FOCCFG = 0x19;
 static const uint8_t REG_BSCFG = 0x1A;
 static const uint8_t REG_AGCCTRL2 = 0x1B;
@@ -52,18 +52,12 @@ static const uint8_t REG_PATABLE = 0x3E;
 // derived from it; 27 MHz parts exist and would land 4 % off frequency.
 static const float CRYSTAL_MHZ = 26.0f;
 
-// Entering TX or RX from IDLE runs a full calibration, around 720 µs by the datasheet's
-// Table 35. Ten milliseconds is generous enough that a timeout means the chip has stopped
-// answering rather than that it is merely busy.
+// A calibration is ~720 µs; ten milliseconds means the chip has stopped answering.
 static const uint32_t STATE_TIMEOUT_US = 10000;
 
-// GDO0's two configurations. 0x0D is "serial data output, asynchronous serial mode" and is
-// what the chip drives while receiving; 0x2E is high impedance, which is what lets the ESP
-// drive the same wire to transmit. Datasheet Table 41.
+// Table 41. 0x2F is "HW to 0" and bit 6 is GDOx_INV, so 0x6F drives the pin high.
 static const uint8_t GDO0_SERIAL_DATA = 0x0D;
 static const uint8_t GDO0_HIGH_Z = 0x2E;
-// "HW to 0", with bit 6 being GDOx_INV — so 0x2F drives the pin low and 0x6F drives it
-// high, whatever the radio is doing. Table 41 again.
 static const uint8_t GDO0_DRIVE_LOW = 0x2F;
 static const uint8_t GDO0_DRIVE_HIGH = 0x6F;
 
@@ -93,15 +87,10 @@ bool CC1101::present() {
   return version != 0x00 && version != 0xFF;
 }
 
-// IOCFG0 goes back to serial data before STX, so the register state the chip transmits with
-// is byte for byte the one the deployed bridge has been using since 2023. That matters more
-// than it looks: transmit is the half that already works, every motor in the house depends
-// on it, and receive must not be allowed to alter it.
-//
-// The 3-state value is therefore an *idle* setting, not a transmit one. §11.2 says the chip
-// takes GDO0 as an input while transmitting, which is why driving it here has always been
-// safe; the datasheet says nothing about IDLE, and IDLE is where this radio spends almost
-// all of its life. What release() removes is that window.
+// **IOCFG0 returns to serial data before STX**, so the chip transmits under exactly the
+// register state every motor in this house is already paired against. The high-impedance
+// value is an *idle* setting: §11.2 says the chip takes GDO0 as an input while transmitting,
+// and says nothing about IDLE, which is where this radio spends almost all its life.
 bool CC1101::transmit() {
   strobe(SIDLE);
   writeRegister(REG_IOCFG0, GDO0_SERIAL_DATA);
@@ -111,8 +100,7 @@ bool CC1101::transmit() {
   return waitForState(CC1101_STATE_TX);
 }
 
-// The pin turns round here: from this point the chip drives GDO0 and the ESP must already
-// have made its own side an input.
+// From here the chip drives GDO0; the caller must already have made its side an input.
 bool CC1101::receive() {
   strobe(SIDLE);
   writeRegister(REG_IOCFG0, GDO0_SERIAL_DATA);
@@ -158,21 +146,15 @@ void CC1101::reset() {
   deselect();
 }
 
-// The whole configuration, transmit and receive. The transmit half is unchanged from what
-// the deployed bridge has been sending since 2023 and must stay that way; every register
-// added for receive acts on the demodulator and cannot alter the transmitted waveform.
-//
-// The receive values are the ones the driver this project's transmit configuration was
-// originally taken from uses for asynchronous OOK, with one correction noted at FOCCFG.
+// **The transmit half must not change**: every motor in this house is paired against it.
+// Everything added for receive acts on the demodulator and cannot alter the waveform.
 void CC1101::configure() {
   // Asynchronous serial mode: the PA follows the GDO0 pin directly, so the waveform is
   // whatever the ESP puts on it. PKT_FORMAT=11, infinite packet length.
   writeRegister(REG_PKTCTRL0, 0x32);
 
-  // GDO0 starts 3-stated, not as serial data. The pin's reset function is a divided crystal
-  // clock, so leaving it alone would put the chip's driver on the wire the ESP is about to
-  // drive — and 0x0D would leave the chip nominally driving it through every idle moment
-  // between presses. receive() switches it to serial data for as long as the chip owns it.
+  // 3-stated, not serial data: the pin's reset function is a divided crystal clock, so
+  // leaving it would put the chip's driver on the wire the ESP is about to drive.
   writeRegister(REG_IOCFG0, GDO0_HIGH_Z);
 
   // ASK/OOK. Manchester off: the encoding is in the waveform we generate, not the chip's.
@@ -192,32 +174,20 @@ void CC1101::configure() {
   // stale synthesiser.
   writeRegister(REG_MCSM0, 0x18);
 
-  // --- receive ---------------------------------------------------------------------------
-  //
-  // None of these can affect transmit: they are the demodulator, its gain control and its
-  // bit synchroniser. FREND1 above is the receive front end and already holds this value.
+  // --- receive ---
 
-  // Frequency offset compensation, with FOC_LIMIT deliberately 0 rather than the 2 every
-  // library copies here. The datasheet's own note on this register: "Frequency offset
-  // compensation is not supported for ASK/OOK. Always use FOC_LIMIT=0 with these
-  // modulation formats."
+  // FOC_LIMIT 0, not the 2 every library copies: "Frequency offset compensation is not
+  // supported for ASK/OOK. Always use FOC_LIMIT=0 with these modulation formats."
   writeRegister(REG_FOCCFG, 0x14);
   writeRegister(REG_BSCFG, 0x1C);
 
-  // The AGC, and the single most consequential choice on the receive side.
-  //
-  // MAX_DVGA_GAIN = 3 disables the three highest digital gain steps. Without it the AGC
-  // amplifies an empty band until noise crosses the decision boundary and GDO0 toggles
-  // continuously — which on a chip that is also running a WiFi stack is how a receiver
-  // starves the thing it shares a core with.
-  //
-  // It is not free: against 0x07 this costs roughly 18 dB of sensitivity (datasheet
-  // §17.4.1, Tables 32 and 33). That trade — range given up for a quiet data line — is the
-  // one number to revisit if a wall button at the far end of the house cannot be heard.
+  // MAX_DVGA_GAIN = 3 caps the digital gain. Without it the AGC amplifies an empty band
+  // until noise crosses the decision boundary and GDO0 chatters — measured at a thousand
+  // times the interrupt rate. It costs ~18 dB of sensitivity (§17.4.1, Tables 32-33), which
+  // is the number to revisit if a distant control cannot be heard.
   writeRegister(REG_AGCCTRL2, 0xC7);
   writeRegister(REG_AGCCTRL1, 0x00);
-  // FILTER_LENGTH = 2, which for OOK is not a filter length at all but the decision
-  // boundary: 12 dB between what counts as carrier and what counts as silence.
+  // FILTER_LENGTH, which for OOK is the decision boundary rather than a length: 12 dB.
   writeRegister(REG_AGCCTRL0, 0xB2);
 
   // TI's recommended calibration and test values for this band. They are overwritten by
