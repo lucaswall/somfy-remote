@@ -12,7 +12,14 @@ PORT ?=                                   # override: make upload PORT=/dev/cu.u
 SECONDS ?= 8
 PIOFLAGS := $(if $(PORT),--upload-port $(PORT),)
 
-.PHONY: help build test upload clean compiledb ports log bootlog run check ota radio
+.PHONY: help build test upload clean compiledb ports log bootlog run check ota radio stamp
+
+# The build stamp is __DATE__ __TIME__ in one translation unit, and nothing recompiles it on
+# an incremental build — so /status and the boot banner would identify the image by whenever
+# that file last happened to change. Touching it is not enough: SCons decides by content hash,
+# not mtime. Dropping the object is.
+stamp:
+	@rm -f .pio/build/*/src/build_info.cpp.o
 
 help:  ## Show this help
 	@echo "somfy-remote — make targets"
@@ -24,24 +31,24 @@ help:  ## Show this help
 	@echo
 	@echo "Variables:  PORT=/dev/cu.usbserial-N   SECONDS=<n>"
 
-build:  ## Compile the firmware
+build: stamp  ## Compile the firmware
 	pio run
 
 test:   ## Run the desktop unit tests
 	pio test -e native
 
-upload: ## Compile and flash over USB
+upload: stamp ## Compile and flash over USB
 	@lsof $${PORT:-/dev/cu.usbserial*} >/dev/null 2>&1 \
 		&& { echo "error: something is holding the serial port:"; lsof $${PORT:-/dev/cu.usbserial*}; \
 		     echo "stop it first — PlatformIO will not, and the upload will fail with Errno 35"; \
 		     exit 1; } || true
 	pio run -t upload $(PIOFLAGS)
 
-radio:  ## Flash the standalone CC1101 self-test and read its result
+radio: stamp ## Flash the standalone CC1101 self-test and read its result
 	pio run -e d1_mini-radio -t upload $(PIOFLAGS)
 	tools/serial_log.py $(if $(PORT),--port $(PORT),) --seconds 6
 
-ota:    ## Flash over WiFi: make ota OTA_HOST=<hostname-or-ip>
+ota: stamp ## Flash over WiFi: make ota OTA_HOST=<hostname-or-ip>
 	@test -n "$(OTA_HOST)" || { echo "error: set OTA_HOST=<hostname-or-ip>"; exit 1; }
 	@test -f include/secrets.h || { echo "error: include/secrets.h missing"; exit 1; }
 	OTA_HOST="$(OTA_HOST)" \
