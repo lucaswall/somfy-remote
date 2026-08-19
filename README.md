@@ -72,8 +72,8 @@ make radio         # prove the CC1101 is wired, before anything else
 make run           # build, flash, print the boot banner
 ```
 
-`secrets.h` carries the WiFi and MQTT credentials, the OTA password and the key that
-guards the web UI's mutating endpoints. It deliberately does **not** carry the remotes'
+`secrets.h` carries the WiFi and MQTT credentials, the OTA password and the login for the
+web UI's settings page. It deliberately does **not** carry the remotes'
 addresses or how many there are: that is configuration, and it lives in a retained MQTT
 document so a replacement board can recover it rather than needing a rebuild. See
 [`docs/recovery.md`](docs/recovery.md) for seeding it the first time.

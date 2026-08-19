@@ -100,3 +100,15 @@ display — every internal path is the index. Publish a map to `<device id>/name
 registry, so a rename in the Home Assistant UI reaches the device's page on its own. A
 remote with no name published simply reads as its index. Nothing breaks if the map never
 arrives — which is why it is not cached on the device.
+
+## The two pages
+
+`/` is operation: up, stop, down, and the state the bridge believes a shutter is in. It is
+exactly what Home Assistant already exposes to anyone in the house, and it is open — a page
+that demands a password before it will say whether a shutter is shut is a page nobody
+opens.
+
+`/settings` is administration: pairing, adding and removing remotes. The browser asks for
+`WEB_USER` / `WEB_PASSWORD` from `include/secrets.h` when it is opened. Prog lives here and
+only here; the open endpoint refuses it. Over plain HTTP on a LAN this is a boundary, not
+protection against somebody already on the network.

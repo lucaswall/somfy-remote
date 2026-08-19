@@ -15,11 +15,14 @@
 // request that arrives mid-transmission simply waits — none of which argues for a second
 // TCP stack.
 //
-// **Reads are open; writes are not.** Pressing a button, adding a remote and removing one
-// all change something outside this box — a motor, or a dozen Home Assistant entities — so
-// the mutating endpoints require the shared secret from include/secrets.h. Reading state
-// stays open, because a page that needs a password to show whether a shutter is shut is a
-// page nobody opens.
+// **Two pages, one boundary.** `/` is operation — up, stop, down, and state. It is exactly
+// what Home Assistant already exposes, so it is open: a page that asks for a password
+// before it will say whether a shutter is shut is a page nobody opens.
+//
+// `/settings` is administration — pairing, adding and removing remotes — and the browser
+// asks for a password when it is opened. That is a real boundary rather than decoration:
+// Prog enrols an emulated remote at a motor, and removing one takes three Home Assistant
+// entities with it.
 class WebUi {
  public:
   WebUi(Remotes &remotes, Store &store, HaMqtt &mqtt, Net &net, const char *hostname)
@@ -32,12 +35,14 @@ class WebUi {
 
  private:
   void start();
-  bool authorised();
+  bool settingsAuthorised();
   void handleState();
   void handleSend();
   void handleLog();
   void handleErrors();
   void handleStatus();
+  void handleSettings();
+  void handleProg();
   void handleRemoteAdd();
   void handleRemoteRemove();
 

@@ -25,6 +25,13 @@ void WebUi::start() {
     _server.sendHeader("Cache-Control", "no-store");
     _server.send_P(200, "text/html", PAGE_HTML);
   });
+  // Shared by both pages, and the only thing here worth letting a browser cache.
+  _server.on("/style.css", HTTP_GET, [this]() {
+    _server.sendHeader("Cache-Control", "max-age=86400");
+    _server.send_P(200, "text/css", PAGE_CSS);
+  });
+  _server.on("/settings", HTTP_GET, [this]() { handleSettings(); });
+  _server.on("/api/prog", HTTP_POST, [this]() { handleProg(); });
   _server.on("/api/state", HTTP_GET, [this]() { handleState(); });
   _server.on("/api/send", HTTP_POST, [this]() { handleSend(); });
   _server.on("/log", HTTP_GET, [this]() { handleLog(); });
@@ -44,19 +51,27 @@ void WebUi::start() {
           WiFi.localIP().toString().c_str());
 }
 
-// The gate on everything that changes something. WEB_SECRET is site-specific and lives in
-// the gitignored header with the rest of the credentials.
+// The gate on the settings page and everything it can do. Basic auth, so the browser puts
+// up its own prompt when the page is opened and remembers it for the endpoints behind it.
 //
-// This is a shared secret over plain HTTP on a home LAN, not authentication in any
-// meaningful sense — it stops an unattended browser tab and a curious script, and it is
-// proportionate to a page that can now create and destroy Home Assistant entities. Anyone
-// who can read LAN traffic can read the secret.
-bool WebUi::authorised() {
-  if (_server.arg("key") == WEB_SECRET) {
+// Plain HTTP on a home LAN: anyone who can read the traffic can read the password. It is
+// not protection against somebody already on the network — it is the boundary between the
+// page anybody in the house opens to close a shutter and the page that pairs motors.
+bool WebUi::settingsAuthorised() {
+  if (_server.authenticate(WEB_USER, WEB_PASSWORD)) {
     return true;
   }
-  _server.send(403, "text/plain", "forbidden\n");
+  _server.requestAuthentication(BASIC_AUTH, "somfy-remote settings",
+                                "authentication required\n");
   return false;
+}
+
+void WebUi::handleSettings() {
+  if (!settingsAuthorised()) {
+    return;
+  }
+  _server.sendHeader("Cache-Control", "no-store");
+  _server.send_P(200, "text/html", SETTINGS_HTML);
 }
 
 // Streamed rather than assembled: the remote list grows with the installation, and the
@@ -71,10 +86,13 @@ void WebUi::handleState() {
 
   snprintf(chunk, sizeof(chunk),
            "{\"host\":\"%s\",\"ip\":\"%s\",\"rssi\":%d,\"uptime\":%lu,\"heap\":%u,"
-           "\"pending\":%u,\"configured\":%s,\"held\":%s,\"remotes\":[",
+           "\"pending\":%u,\"configured\":%s,\"held\":%s,\"degraded\":%s,"
+           "\"store\":\"%c\",\"free\":%u,\"epoch\":%lu,\"remotes\":[",
            _hostname, WiFi.localIP().toString().c_str(), _net.rssi(), (unsigned long)up,
            ESP.getFreeHeap(), _remotes.pending(), _mqtt.configured() ? "true" : "false",
-           _remotes.held() ? "true" : "false");
+           _store.legacyHeld() ? "true" : "false", _store.degraded() ? "true" : "false",
+           _store.activeName(), _store.freeSlots(),
+           (unsigned long)_mqtt.config().epoch);
   _server.sendContent(chunk);
 
   // The name comes from Home Assistant and is shown, never used to key anything: every
@@ -98,16 +116,20 @@ void WebUi::handleState() {
   _server.sendContent("");
 }
 
+// Open, like the page it serves: this is what Home Assistant already lets anyone in the
+// house do. Prog is deliberately not reachable here — it lives behind the settings
+// password, because it changes a pairing rather than a position.
 void WebUi::handleSend() {
-  if (!authorised()) {
-    return;
-  }
   const String number = _server.arg("remote");
   const String button = _server.arg("command");
 
   SomfyCommand command;
   if (!somfyCommandFromText(button.c_str(), button.length(), &command)) {
     _server.send(400, "text/plain", "unknown command\n");
+    return;
+  }
+  if (command == SOMFY_PROG) {
+    _server.send(403, "text/plain", "Prog is a settings operation\n");
     return;
   }
 
@@ -136,11 +158,36 @@ void WebUi::handleSend() {
   handleState();
 }
 
+// Behind the settings password. Held down at the motor, Prog enrols or drops this emulated
+// remote — the one press here that changes something permanent rather than something that
+// can be pressed back.
+void WebUi::handleProg() {
+  if (!settingsAuthorised()) {
+    return;
+  }
+  const String number = _server.arg("remote");
+  char *end = nullptr;
+  const long remote = strtol(number.c_str(), &end, 10);
+  if (number.length() == 0 || *end != '\0' || remote < 0 || remote >= _remotes.count()) {
+    _server.send(404, "text/plain", "no such remote\n");
+    return;
+  }
+  if (!_remotes.transmittable((uint8_t)remote)) {
+    _server.send(409, "text/plain",
+                 !_remotes.hasCounter((uint8_t)remote)
+                     ? "remote has no rolling code yet\n"
+                     : "remote is disabled or not operational\n");
+    return;
+  }
+  _remotes.queue((uint8_t)remote, SOMFY_PROG);
+  _server.send(200, "text/plain", "Prog queued\n");
+}
+
 // Adding takes the next never-used index, never a freed one. A recycled index would point
 // an existing Home Assistant entity and an existing rolling code at different hardware —
 // the counter belongs to the pair (index, address), and reusing one breaks that binding.
 void WebUi::handleRemoteAdd() {
-  if (!authorised()) {
+  if (!settingsAuthorised()) {
     return;
   }
   cfg::ConfigDoc next = _mqtt.config();
@@ -178,7 +225,7 @@ void WebUi::handleRemoteAdd() {
 // re-key every Home Assistant entity above it, and deleting the rolling code would restart
 // the counter at zero if the same shutter were ever added back.
 void WebUi::handleRemoteRemove() {
-  if (!authorised()) {
+  if (!settingsAuthorised()) {
     return;
   }
   const String number = _server.arg("remote");
