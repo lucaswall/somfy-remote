@@ -10,8 +10,7 @@
 // Pinning them matters more than it looks. Home Assistant derives an entity id from the
 // device name and keeps it keyed by unique_id; change either and a dozen covers come back
 // as new entities, leaving every automation and dashboard card pointing at nothing. The
-// names below are the ones the 2023 sketch published, down to the "wemos" prefix, and the
-// tests exist to keep them that way.
+// "wemos" prefix is not a typo — it is load-bearing, and the tests exist to keep it.
 
 #define TOPIC_LEN 64
 #define OBJECT_ID_LEN 48

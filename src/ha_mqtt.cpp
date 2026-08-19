@@ -418,21 +418,6 @@ bool HaMqtt::applyConfig(const cfg::ConfigDoc &doc, const char *writer) {
   return true;
 }
 
-bool HaMqtt::mirrorConfirmed() const {
-  if (_reconciling || _remotes.count() == 0) {
-    return false;
-  }
-  for (uint8_t i = 0; i < _remotes.count(); i++) {
-    if (!_remotes.hasCounter(i)) {
-      continue;
-    }
-    if (_mirrorSeen[i] != _remotes.counter(i)) {
-      return false;
-    }
-  }
-  return true;
-}
-
 const char *HaMqtt::nameOf(uint8_t remote) const {
   return remote < rs::MAX_REMOTES ? _names[remote] : "";
 }

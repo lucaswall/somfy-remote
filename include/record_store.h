@@ -7,24 +7,17 @@
 // caller-supplied byte array. No flash calls, no Arduino headers, so `make test` can
 // exercise every crash path that hardware cannot be made to reproduce on demand.
 //
-// **Why a log and not a record.** The Arduino EEPROM library erases and rewrites a whole
-// 4 KB sector on every commit, so changing two bytes costs one erase/program cycle of the
-// sector's rated life. The counters recovered from the board this firmware replaces sum
-// to ~47,880 presses, which is ~48% of a typical 100,000-cycle rating — on a flash part
-// whose vendor id (0xD8) matches no mainstream manufacturer and which therefore has no
-// published rating at all.
+// **Why a log and not a record.** Rewriting a value in place costs a 4 KB sector erase,
+// because that is the only granularity NOR flash erases at. Programming, by contrast,
+// only clears bits and works on any aligned word — so appending into already-erased space
+// costs no erase at all, and one erase then covers a sector's worth of presses instead of
+// one. It also keeps the erase off the send path: a program is microseconds, a sector
+// erase is tens of milliseconds, and that would otherwise sit between the button press
+// and the frame leaving the antenna.
 //
-// NOR flash programs by clearing bits and erases by setting them, and only erase is
-// sector-wide. So appending an 8-byte record into already-erased space costs no erase at
-// all, and one erase now covers a sector's worth of presses instead of one. That is also
-// what takes the erase out of the send path: a program is microseconds, a sector erase is
-// tens of milliseconds, and today one of those sits between the button press and the
-// frame leaving the antenna.
-//
-// **Why generic key/value and not a rolling-code journal.** The namespace byte is one
-// byte of a record that has to exist anyway. Without it, the first thing that needs
-// persisting after the counters forces a second format migration; with it, it takes the
-// next free namespace id.
+// **Why generic key/value.** The namespace byte is one byte of a record that has to exist
+// anyway, and without it the first thing that needs persisting after the counters forces
+// a format change.
 
 namespace rs {
 
@@ -46,7 +39,9 @@ static const uint8_t NS_FREE = 0xFF;     // not a namespace: an erased slot
 static const uint8_t SCALAR_REMOTE_COUNT = 0;      // highest configured index + 1
 static const uint8_t SCALAR_ADDRESS_BASE = 1;
 static const uint8_t SCALAR_CONFIG_EPOCH = 2;
-static const uint8_t SCALAR_LEGACY_RELEASED = 3;   // until set, the legacy sector is not erased
+// 3 was a migration flag and is retired. Do not reuse it: stores written before the
+// migration was removed still carry the record, and replay would hand its value to
+// whatever took the id.
 
 // No override. ADDR cannot express a delete — programming only clears bits — so a config
 // that stops naming a remote writes this instead, and the address falls back to

@@ -109,14 +109,6 @@ void loop() {
   remotes.loop();
   store.loop();   // compaction, never on the press path
 
-  // The one irreversible step of the migration, gated on evidence rather than on a
-  // timer: the 2023 counters are erased only once every one of them is provably also in
-  // Home Assistant. Until then the store runs single-sector and says so.
-  if (store.legacyHeld() && mqtt.mirrorConfirmed()) {
-    if (store.releaseLegacy()) {
-      logLine("store     : migration complete, both sectors now in rotation");
-    }
-  }
 
   if (elapsed(now, lastHealth, HEALTH_MS)) {
     lastHealth = now;
@@ -125,8 +117,7 @@ void loop() {
             (unsigned long)ESP.getFreeHeap(), (unsigned long)heapLowWater, net.rssi(),
             net.connected() ? "up" : "down", mqtt.connected() ? "up" : "down",
             radio.ready() ? "up" : "down", remotes.pending(), errorBuffer().count(),
-            store.activeName(), store.freeSlots(),
-            store.degraded() ? " DEGRADED" : (store.legacyHeld() ? " legacy-held" : ""));
+            store.activeName(), store.freeSlots(), store.degraded() ? " DEGRADED" : "");
   }
 
   const uint32_t heap = ESP.getFreeHeap();

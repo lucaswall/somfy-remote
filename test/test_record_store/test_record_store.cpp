@@ -138,17 +138,8 @@ void valid_header_reads_its_generation() {
   TEST_ASSERT_EQUAL_UINT32(9, gen);
 }
 
-// The installed board's legacy sector begins 2F 3D 6F 6B ... — neither erased nor a valid
-// header. A migration keyed on "blank" could never have fired on the one device that
-// needed it.
-void legacy_counter_bytes_in_slot_zero_are_foreign_not_blank() {
-  const uint8_t legacy[8] = {0x2F, 0x3D, 0x6F, 0x6B, 0x92, 0x03, 0x8F, 0x03};
-  memcpy(slot(0), legacy, sizeof(legacy));
-  uint32_t gen;
-  TEST_ASSERT_FALSE(sectorHeader(sector, &gen));
-  TEST_ASSERT_NOT_EQUAL(SLOT_FREE, classify(slot(0)));
-}
-
+// Slot 0 decides a sector's state, and "not a valid header" has to cover blank,
+// half-written and foreign content alike.
 void torn_header_falls_back_to_the_other_sector() {
   TEST_ASSERT_EQUAL(ACTIVE_A, selectActive(true, 4, false, 0));
   TEST_ASSERT_EQUAL(ACTIVE_B, selectActive(false, 0, true, 4));
@@ -172,9 +163,8 @@ void live_set_at_thirty_remotes_leaves_room_to_append() {
   map.put(NS_SCALAR, SCALAR_REMOTE_COUNT, MAX_REMOTES);
   map.put(NS_SCALAR, SCALAR_ADDRESS_BASE, 0x100000);
   map.put(NS_SCALAR, SCALAR_CONFIG_EPOCH, 1);
-  map.put(NS_SCALAR, SCALAR_LEGACY_RELEASED, 1);
-  TEST_ASSERT_EQUAL_UINT8(94, map.count());
-  // 512 slots, one header, 94 live records: the rest is append space per rotation.
+  TEST_ASSERT_EQUAL_UINT8(93, map.count());
+  // 512 slots, one header, 93 live records: the rest is append space per rotation.
   TEST_ASSERT_TRUE(SLOTS - 1 - map.count() > 400);
 }
 
@@ -273,7 +263,6 @@ int main() {
   RUN_TEST(a_header_outside_slot_zero_is_not_a_live_value);
   RUN_TEST(blank_sector_has_no_header);
   RUN_TEST(valid_header_reads_its_generation);
-  RUN_TEST(legacy_counter_bytes_in_slot_zero_are_foreign_not_blank);
   RUN_TEST(torn_header_falls_back_to_the_other_sector);
   RUN_TEST(higher_generation_wins);
   RUN_TEST(live_set_at_thirty_remotes_leaves_room_to_append);

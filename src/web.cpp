@@ -88,11 +88,11 @@ void WebUi::handleState() {
 
   snprintf(chunk, sizeof(chunk),
            "{\"host\":\"%s\",\"ip\":\"%s\",\"rssi\":%d,\"uptime\":%lu,\"heap\":%u,"
-           "\"pending\":%u,\"configured\":%s,\"held\":%s,\"degraded\":%s,"
+           "\"pending\":%u,\"configured\":%s,\"degraded\":%s,"
            "\"store\":\"%c\",\"free\":%u,\"epoch\":%lu,\"remotes\":[",
            _hostname, WiFi.localIP().toString().c_str(), _net.rssi(), (unsigned long)up,
            ESP.getFreeHeap(), _remotes.pending(), _mqtt.configured() ? "true" : "false",
-           _store.legacyHeld() ? "true" : "false", _store.degraded() ? "true" : "false",
+           _store.degraded() ? "true" : "false",
            _store.activeName(), _store.freeSlots(),
            (unsigned long)_mqtt.config().epoch);
   _server.sendContent(chunk);
@@ -357,7 +357,7 @@ void WebUi::handleStatus() {
            "heap    : %u free\n"
            "wifi    : %s  ip %s  rssi %d dBm\n"
            "remotes : %u configured, %u command(s) queued\n"
-           "store   : sector %c gen %lu, %u free slots, %u spent%s%s\n"
+           "store   : sector %c gen %lu, %u free slots, %u spent%s\n"
            "config  : epoch %lu by %s\n"
            "log     : %u of %u lines, %u faults\n",
            _hostname, BUILD_STAMP, ESP.getResetReason().c_str(),
@@ -367,7 +367,6 @@ void WebUi::handleStatus() {
            _net.rssi(), _remotes.count(), _remotes.pending(), _store.activeName(),
            (unsigned long)_store.generation(), _store.freeSlots(), _store.spent(),
            _store.degraded() ? "  DEGRADED" : "",
-           _store.legacyHeld() ? "  legacy-held" : "",
            (unsigned long)_mqtt.config().epoch, _mqtt.config().writer,
            logBuffer().count(), LOG_LINES, errorBuffer().count());
 

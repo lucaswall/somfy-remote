@@ -33,8 +33,8 @@ allow='192\.0\.2\.|198\.51\.100\.|203\.0\.113\.|0\.0\.0\.0|127\.0\.0\.1|255\.255
 fail=0
 for pat in "$ipv4" "$mac" "$cred" "$rfid"; do
   # The allowlist is matched against the line's text only. git grep prefixes every hit with
-  # "path:line:", and matching that too meant any path containing an allowed word — TODO.md,
-  # include/secrets.h.example — was exempt from every pattern, whole file.
+  # "path:line:", and matching that too would exempt whole files whose *path* happens to
+  # contain an allowed word.
   hits=$(printf '%s\n' "$content" | grep -E "$pat" \
          | awk -v allow="$allow" '{ text = $0; sub(/^[^:]*:[0-9]+:/, "", text);
                                     if (text !~ allow) print }')

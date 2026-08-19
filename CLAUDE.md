@@ -3,11 +3,12 @@
 ESP8266 + CC1101 bridge that puts Somfy RTS shutters on Home Assistant over MQTT, by
 emulating as many handheld remotes as there are shutters. See `README.md` for what it does,
 `docs/hardware.md` for wiring, `docs/somfy-rts.md` for the protocol, `docs/storage.md` for
-how rolling codes are persisted and `docs/recovery.md` for replacing a dead board.
+how rolling codes are persisted, `docs/configuration.md` for configuration and replacing a
+board.
 
-Configuration is not compiled in. How many remotes exist, what address each carries and
-whether it may be driven all come from a retained MQTT document that Home Assistant holds,
-so a replacement board recovers instead of needing a rebuild.
+Configuration is not compiled in: how many remotes exist, what address each carries and
+whether it may be driven all come from a retained MQTT document, so a replacement board
+recovers instead of needing a rebuild.
 
 ---
 
@@ -96,28 +97,17 @@ progress without a shutter moving, stop and say so; do not work around it.
 
 ## Two things that must not change
 
-This firmware replaces one that has been running since 2023, on a board that is already
-installed and already paired.
-
 1. **The MQTT topics, unique ids and device names** in `include/topics.h`. Home Assistant
-   keys its entities on them; changing one orphans a dozen covers and every automation
-   that mentions them. `test/test_topics/` pins the strings. New topics may be added; the
-   existing ones are not free to change.
+   keys thirty-nine entities on them; changing one orphans a dozen covers and every
+   automation and script that mentions them. `test/test_topics/` pins the strings. New
+   topics may be added; the existing ones are not free to change.
 2. **The rolling code, in every direction it can move.** A counter may only ever go
    forward. Somfy receivers accept a code ahead of the last one they saw and reject one
    they have already seen, so a counter that moves backwards — by a restored backup, a
-   re-added remote, a stale mirror, a bad migration — means walking to the motor and
-   pairing it again. `include/record_store.h` states the rule and
-   `test/test_record_store/` pins it.
+   re-added remote, a stale mirror — means walking to the motor and pairing it again.
+   `include/record_store.h` states the rule and `test/test_record_store/` pins it.
 
 Neither is a design choice that is still open.
-
-**The EEPROM layout is no longer one of them.** Until 2026-08 the second entry pinned a
-fixed 12 × uint16 layout in the emulated EEPROM sector. That scheme is gone: it rewrote a
-whole 4 KB sector on every press and had consumed roughly half the flash's rated life. The
-counters now live in an append-only record store across two sectors — see
-`docs/storage.md`. The *invariant* survived the format change; the addresses did not, and
-pinning them here would now be pinning something nothing writes.
 
 ## Hardware
 

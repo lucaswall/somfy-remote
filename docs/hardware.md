@@ -85,29 +85,17 @@ synthesiser calibrates. Every failure it reports is wiring or power, never softw
 **GDO0 is the one wire it cannot check.** The chip never reads it back, so no register test
 can tell whether it is connected, mis-wired or shorted. Verify that one by eye.
 
-## Replacing the 2023 firmware on a board that is already installed
+## What must survive a reflash
 
-Two things on that board must survive, and neither is in this repository:
+1. **The remotes' address.** A motor is paired to an address; drive it from a different one
+   and the shutter stops answering, and getting it back means pressing Prog on every motor
+   by hand. It is not compiled in — it lives in the retained configuration document, which
+   is what a board reads at boot. See `docs/configuration.md`.
+2. **The rolling codes.** `make upload` and `make ota` write the application only and leave
+   the store's two sectors alone. **`esptool.py erase_flash` does not** — never run it on a
+   board you intend to keep. They are also mirrored to MQTT, which is the copy that
+   survives the board itself.
 
-1. **The remotes' address.** A motor is paired to an address. Drive it from a different
-   one and the shutter simply stops answering, and getting it back means pressing Prog on
-   every motor by hand. It is no longer compiled in: it lives in the retained
-   configuration document, which is what a replacement board reads at boot.
-2. **The rolling codes.** A normal `make upload` writes the application only and leaves
-   the store's two sectors alone, so they survive. `esptool.py erase_flash` does not —
-   never run it on a board you intend to keep. They are also mirrored to MQTT, which is
-   the copy that survives the board dying; see `docs/recovery.md`.
-
-If the address has been lost, try the serial console first: a firmware that logs its
-configuration at boot will have printed it, and reading it back costs nothing. Otherwise
-dump the old flash before overwriting it (`esptool.py read_flash 0 0x400000 old.bin`) and
-look for it in the image — a 24-bit constant is a 4-byte-aligned little-endian word with a
-zero high byte — or receive a press off the air with an RTL-SDR or a CC1101 in receive
-mode, which yields the current rolling code as well. Dump the flash **first** either way:
-it costs a minute, and it is the only copy of the EEPROM sector.
-
-On a 4 MB ESP8266 the store occupies flash offsets `0x3FA000` and `0x3FB000` — the sector
-the linker calls `_EEPROM_start` and the unclaimed one below it, between there and
-`_FS_end`. Both are the same addresses in every 4 MB linker layout the core ships, so a
-rebuild with a different filesystem size still finds the counters. `docs/storage.md` has
-the format.
+The store occupies flash offsets `0x3FA000` and `0x3FB000` on a 4 MB board — the sector the
+linker calls `_EEPROM_start` and the unclaimed one below it. Same addresses in every 4 MB
+layout the core ships. `docs/storage.md` explains why.

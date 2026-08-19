@@ -84,7 +84,7 @@ make run           # build, flash, print the boot banner
 web UI's settings page. It deliberately does **not** carry the remotes'
 addresses or how many there are: that is configuration, and it lives in a retained MQTT
 document so a replacement board can recover it rather than needing a rebuild. See
-[`docs/recovery.md`](docs/recovery.md) for seeding it the first time.
+[`docs/configuration.md`](docs/configuration.md) for seeding it the first time.
 
 **Choose the address base once and write it down.** A motor is paired to an address;
 changing it means walking to every shutter and pairing it again. If you are replacing an
@@ -111,14 +111,21 @@ UI asks first.
 
 Everything the board serves, on port 80.
 
+Two pages. `/` is operation and needs no password; `/settings` is administration and asks
+for one. Everything under `/settings` is behind the same login.
+
 | Endpoint | Purpose |
 |---|---|
-| `GET /` | The web UI: per-remote Up/My/Down/Prog, board status, and a live console panel |
-| `GET /api/state` | State as JSON, plus IP, RSSI, uptime, heap and the queue depth. Polled every two seconds by the page |
-| `POST /api/send` | `?remote=<n>&command=Up\|My\|Down\|Prog` |
-| `GET /status` | Snapshot: build stamp, reset reason, uptime, heap, WiFi, and a line per remote with its position and next rolling code |
+| `GET /` | Operation: per-remote Up/My/Down, board status, live console |
+| `GET /api/state` | State as JSON, plus IP, RSSI, uptime, heap and queue depth. Polled by both pages |
+| `POST /api/send` | `?remote=<n>&command=Up\|My\|Down`. Refuses `Prog` |
+| `GET /status` | Snapshot: build stamp, reset reason, uptime, heap, WiFi, store, and a line per remote |
 | `GET /log` | The console ring as plain text, oldest first |
 | `GET /errors` | Faults only, from a separate smaller ring |
+| `GET /settings` | Administration. **Password.** |
+| `POST /api/prog` | `?remote=<n>`. **Password.** Pairs or unpairs a motor |
+| `POST /api/remote/add` | `?address=<hex>` optional. **Password.** Starts not operational |
+| `POST /api/remote/flags` | `?remote=<n>&enabled=0\|1&operational=0\|1`. **Password.** |
 
 ```bash
 curl http://somfy-remote.local/status
@@ -135,15 +142,22 @@ connects, publishes happily, and no entity ever appears.
 | Topic | Direction |
 |---|---|
 | `<id>/remote<n>/button` | in — `Up`, `Down`, `My` or `Prog` |
-| `<id>/remote<n>/state` | out — `open` / `closed`, retained |
+| `<id>/remote<n>/state` | out — `open` / `closed`, retained. Read back at boot to restore position |
 | `<id>/remote<n>/my_state` | out — `off` after each My press, retained |
 | `<id>/status` | out — `online` / `offline`, retained, last will |
+| `<id>/config` | in/out — the configuration document, retained |
+| `<id>/code/remote<n>` | in/out — the rolling code mirror, retained |
+| `<id>/names` | in — display names from Home Assistant, retained |
+| `<id>/health` | out — store diagnostics, retained |
 | `<discovery>cover/<id><n>_cover/config` | out — discovery, retained |
 | `<discovery>switch/<id><n>_my/config` | out — discovery, retained |
-| `<discovery>button/<id><n>_prog/config` | out — discovery, retained |
+| `<discovery>sensor/<id><n>_code/config` | out — discovery, retained |
 
 The bridge subscribes to `<id>/+/button` once rather than to each remote's topic in turn,
 and parses the remote number out of the topic.
+
+The three in/out topics are why a replacement board recovers by itself:
+[`docs/configuration.md`](docs/configuration.md).
 
 ## Rolling codes
 
@@ -160,7 +174,7 @@ commands will be ignored.
 Counters are stored in an append-only record store rather than rewritten in place, so a
 press costs one 8-byte flash write instead of a 4 KB erase — see [`docs/storage.md`](docs/storage.md).
 Every counter is also mirrored to a retained MQTT topic, which is what lets a replacement
-board recover them; [`docs/recovery.md`](docs/recovery.md) covers that.
+board recover them; [`docs/configuration.md`](docs/configuration.md) covers that.
 
 One rule governs all of it: **a counter may only ever move forward.** Home Assistant may
 raise one on a board that is behind; nothing may ever lower one.
@@ -191,13 +205,14 @@ about five seconds — on the IPv6 half before using the IPv4 answer it already 
 
 ```
 include/        pure logic, header-only, unit tested — frame codec, pulse train,
-                topics, rolling code layout, per-remote state, command queue
+                topics, record store, configuration document, per-remote state
 lib/CC1101/     the radio driver: SPI, registers, transmit mode
-src/            peripherals and wiring: radio timing, WiFi/OTA, web UI, MQTT
+src/            peripherals and wiring: radio timing, WiFi/OTA, web UI, MQTT, flash
                 plus a standalone self-test with its own build env
 test/           desktop unit tests (make test)
-tools/          bounded serial capture, privacy scan
-docs/           hardware wiring, the RTS protocol, code standards
+tools/          bounded serial capture, privacy scan, config seeding
+ha/             Home Assistant side: the automation that publishes display names
+docs/           hardware, the RTS protocol, storage, configuration, code standards
 local/          gitignored: credentials, IPs, the remotes' RF address
 ```
 

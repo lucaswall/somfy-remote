@@ -41,14 +41,6 @@ class HaMqtt {
 
   const cfg::ConfigDoc &config() const { return _config; }
 
-  // True once every configured remote's counter is present in the mirror at exactly the
-  // value the device holds. This is the machine-checkable half of the legacy release
-  // gate: the 2023 counters are only erased once a second copy provably exists.
-  bool mirrorConfirmed() const;
-
-  // True while the boot reconciliation is still deciding whose counters win.
-  bool reconciling() const { return _reconciling; }
-
   // Tells Home Assistant to forget a remote's three entities. An empty retained payload on
   // a discovery topic is how MQTT discovery expresses deletion.
   void publishDiscoveryRemoval(uint8_t remote);

@@ -235,9 +235,7 @@ function render(s){
   $('epoch').textContent = s.epoch;
   $('store').textContent = 'sector ' + s.store;
   $('free').textContent = s.free;
-  $('note').textContent = s.held
-    ? 'legacy region still held — released once every counter is mirrored'
-    : (s.degraded ? 'STORE DEGRADED — see faults' : '');
+  $('note').textContent = s.degraded ? 'STORE DEGRADED — see faults' : '';
   if (s.remotes.length !== built) build(s.remotes.length);
   for (const r of s.remotes){
     $('n' + r.n).textContent = r.name ? `${r.name} (${r.n})` : `Remote ${r.n}`;
