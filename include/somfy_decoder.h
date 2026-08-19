@@ -85,6 +85,15 @@ class SomfyDecoder {
   // chattering faster than anything downstream can follow.
   uint16_t levelRepeats() const { return _levelRepeats; }
 
+  // True once for each frame that just began, so a diagnostic capture can start where the
+  // data does. Without it the sync burst fills most of the buffer and the frame is cut off
+  // at the far end — which reads exactly like a corrupt frame and is not one.
+  bool takeFrameStart() {
+    const bool started = _frameStarted;
+    _frameStarted = false;
+    return started;
+  }
+
  private:
   void abandon() {
     if (_inData) {
@@ -112,6 +121,7 @@ class SomfyDecoder {
       _bits = 0;
       _waitingHalf = false;
       _bit = false;   // the toggle's seed: the first full symbol after sync is a 1
+      _frameStarted = true;
       return;
     }
     _syncIntervals = 0;
@@ -175,6 +185,7 @@ class SomfyDecoder {
   uint16_t _aborted = 0;
   uint16_t _levelRepeats = 0;
   bool _bit = false;
+  bool _frameStarted = false;
   uint8_t _syncIntervals = 0;
   uint8_t _bits = 0;
   bool _inData = false;

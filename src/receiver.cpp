@@ -324,10 +324,10 @@ void Receiver::applyEdges() {
     const bool high = (_lastEntry & 1u) != 0;
     _lastEntry = entry;
 
+    // Clamped rather than dropped: an interval longer than a frame contains is a gap, and
+    // seeing where the gaps fall is half of what makes a capture readable.
+    const uint16_t clamped = interval > 0x7FFF ? 0x7FFF : (uint16_t)interval;
     if (!_captureFrozen) {
-      // Clamped rather than dropped: an interval longer than a frame contains is a gap, and
-      // seeing where the gaps fall is half of what makes a capture readable.
-      const uint16_t clamped = interval > 0x7FFF ? 0x7FFF : (uint16_t)interval;
       _capture[_captureHead] = (uint16_t)(clamped | (high ? 0x8000u : 0u));
       _captureHead = (uint16_t)((_captureHead + 1) % CAPTURE_SLOTS);
       if (_captureHead == 0) {
@@ -338,6 +338,15 @@ void Receiver::applyEdges() {
     const uint16_t abortedBefore = _decoder.aborted();
     SomfyHeard heard;
     const bool decoded = _decoder.feed(high, interval, &heard);
+
+    // Restart the capture where the data does. A sync burst is sixteen intervals of nothing
+    // anybody needs to see, and letting it share the buffer with the frame means the frame
+    // is cut off at the far end — which reads exactly like corruption and is not.
+    if (!_captureFrozen && _decoder.takeFrameStart()) {
+      _captureHead = 0;
+      _captureFilled = false;
+      _capture[_captureHead++] = (uint16_t)(clamped | (high ? 0x8000u : 0u));
+    }
 
     // A frame that reached the data state and then failed is the only interesting thing on
     // this pin, and at a noisy 4 kHz the buffer holds barely a tenth of a second — so by the
