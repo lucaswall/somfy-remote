@@ -37,7 +37,6 @@ class Remotes {
   // counters win. Dropping would be the wrong verb: the queue evicts its *oldest* entry
   // when full, so a dropped command is silently the one somebody asked for first.
   void hold(bool holding) { _held = holding; }
-  bool held() const { return _held; }
 
   uint8_t count() const {
     return (uint8_t)_store.valueOr(rs::NS_SCALAR, rs::SCALAR_REMOTE_COUNT, 0);

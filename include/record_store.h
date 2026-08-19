@@ -39,9 +39,8 @@ static const uint8_t NS_FREE = 0xFF;     // not a namespace: an erased slot
 static const uint8_t SCALAR_REMOTE_COUNT = 0;      // highest configured index + 1
 static const uint8_t SCALAR_ADDRESS_BASE = 1;
 static const uint8_t SCALAR_CONFIG_EPOCH = 2;
-// 3 was a migration flag and is retired. Do not reuse it: stores written before the
-// migration was removed still carry the record, and replay would hand its value to
-// whatever took the id.
+// 3 is retired. A store written by an older build can still carry a record under that id,
+// and replay would hand its value to whatever took it. Take 4.
 
 // No override. ADDR cannot express a delete — programming only clears bits — so a config
 // that stops naming a remote writes this instead, and the address falls back to
@@ -178,9 +177,10 @@ class LiveMap {
 
 // --- sector level ---------------------------------------------------------------------
 
-// A sector's state is decided by slot 0 alone. "Foreign" covers blank, half-written and
-// legacy content alike — the installed board's legacy sector holds counter bytes in slot
-// 0, so a test for "blank" would never have fired on the only device needing migration.
+// A sector's state is decided by slot 0 alone: a valid header, or nothing. The test is
+// "no valid header" rather than "blank", so half-written and foreign content are handled
+// identically to erased — a sector that merely looks unfamiliar is never mistaken for one
+// that is ready to write into.
 inline bool sectorHeader(const uint8_t *sector, uint32_t *generation) {
   if (classify(sector) != SLOT_VALID || sector[0] != NS_HEADER || sector[1] != 0) {
     return false;

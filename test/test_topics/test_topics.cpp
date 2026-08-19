@@ -27,7 +27,7 @@ static void topics_match_the_deployed_firmware(void) {
   TEST_ASSERT_EQUAL_STRING("wemos_somfy_remote/remote11/button", buffer);
 }
 
-// Availability is the one topic the old firmware never had. It is new, so it is the only
+// Availability is not inherited from anything, so it is the only
 // name here that was chosen rather than inherited.
 static void availability_hangs_off_the_same_root(void) {
   char buffer[TOPIC_LEN];

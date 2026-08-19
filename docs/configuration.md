@@ -45,7 +45,7 @@ they survive a broker restart and a host rebuild.
 
 ```
 tools/seed_config.py --host <BROKER_IP> --user <MQTT_USER> --password <MQTT_PASSWORD> \
-                     --base 0x000000 --count 12 --not-operational 9,10,11
+                     --base 0x000000 --count 8 --not-operational 6,7
 ```
 
 Until the topic exists the device is **unconfigured**: no entities, every command refused,

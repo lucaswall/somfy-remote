@@ -375,8 +375,9 @@ void WebUi::handleStatus() {
   _server.send(200, "text/plain", body);
 
   // One line per remote, streamed for the same reason /api/state is. The rolling code is
-  // here because a counter that has stopped moving is the signature of an EEPROM that is
-  // no longer being written — and of shutters that will ignore the next boot's commands.
+  // here because a counter that has stopped moving while presses are logged is the
+  // signature of a flash that has stopped accepting writes — and of shutters that will
+  // ignore the next boot's commands.
   char line[128];
   for (uint8_t i = 0; i < _remotes.count(); i++) {
     const RemoteState &state = _remotes.state(i);

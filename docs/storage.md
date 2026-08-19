@@ -7,9 +7,9 @@ hand. This is why the storage looks the way it does; the format itself is in
 ## Why a log instead of a record
 
 Rewriting a value in place costs a **4 KB sector erase**, because that is the only
-granularity NOR flash erases at — `EEPROM.commit()` is `flashEraseSector()` followed by a
-full rewrite. Changing two bytes on every press spends one erase/program cycle of that
-sector's rated life each time.
+granularity NOR flash erases at. The Arduino `EEPROM` library, the obvious way to do this,
+is exactly that: `commit()` erases the sector and rewrites all of it. Changing two bytes on
+every press would spend one erase/program cycle of that sector's rated life each time.
 
 Programming is different: it only clears bits, and works on any 4-byte-aligned word. So
 appending an 8-byte record into already-erased space costs no erase at all. One erase then

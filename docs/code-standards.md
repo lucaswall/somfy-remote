@@ -48,7 +48,7 @@ checks are human.
 ### The tests that are not really tests
 
 `test_topics` and `test_rolling_code` pin strings and addresses that a live installation
-depends on — Home Assistant entity ids and EEPROM offsets. They are not describing the
+depends on — Home Assistant entity ids and the record format. They are not describing the
 code, they are describing what must not change. Read `docs/somfy-rts.md` and the header
 comments before "fixing" one of them.
 

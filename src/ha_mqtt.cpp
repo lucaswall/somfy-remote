@@ -501,8 +501,8 @@ void HaMqtt::publishDiscovery(uint8_t remote) {
       case 1:
         // My as a switch rather than a button, because Google Home does not expose
         // buttons usefully. Both payloads are the same press; state_on and state_off are
-        // what make it fall back to off afterwards instead of sitting in Home Assistant
-        // as permanently unknown, which is what the firmware this replaces did.
+        // what make it fall back to off afterwards rather than sitting permanently
+        // unknown.
         component = "switch";
         uniqueId(object, sizeof(object), MQTT_DEVICE_ID, remote, "my");
         doc["name"] = "My";
@@ -529,15 +529,10 @@ void HaMqtt::publishDiscovery(uint8_t remote) {
         // RTS is one-way. Home Assistant shows both buttons at all times rather than
         // hiding the one it thinks is redundant, because what it thinks may be wrong.
         //
-        // `optimistic` is the documented key for that. The 2023 sketch asked for it as
-        // `assumed_state`, which is what the attribute is called on the entity but is not
-        // in the MQTT cover schema, so discovery drops it.
-        //
-        // That was not obvious from the installation: its covers did report the attribute,
-        // but from a `customize_glob` in Home Assistant's configuration.yaml rather than
-        // from the payload — which is exactly the workaround you would expect somebody to
-        // have added once the discovery key silently did nothing. Reading the live entity
-        // alone suggests the key works; it does not.
+        // `optimistic` is the documented key. Do not reach for `assumed_state`: that is
+        // what the attribute is called on the entity, but it is not in the MQTT cover
+        // schema and discovery drops it silently — an entity that reports the attribute
+        // is not evidence the key worked, because a customize rule sets the same thing.
         //
         // State still arrives on the state topic either way: optimistic only means the
         // entity moves on the command instead of waiting for us.
@@ -642,8 +637,8 @@ void HaMqtt::publishState(uint8_t remote) {
   const RemoteState &state = _remotes.state(remote);
   char topic[TOPIC_LEN];
 
-  // Retained, unlike the firmware this replaces: without it, a Home Assistant restart
-  // leaves every cover blank until somebody presses something.
+  // Retained, so a Home Assistant restart does not leave every cover blank until somebody
+  // presses something.
   if (state.position() != COVER_UNKNOWN) {
     topicCoverState(topic, sizeof(topic), MQTT_DEVICE_ID, remote);
     _mqtt.publish(topic, coverPositionName(state.position()), true);

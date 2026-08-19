@@ -6,7 +6,7 @@ The firmware carries no addresses and no remote count: it reads both from
 rebuild. This writes that topic.
 
     tools/seed_config.py --host <BROKER_IP> --user <U> --password <P> \\
-                         --base 0x000000 --count 12 --not-operational 9,10,11
+                         --base 0x000000 --count 8 --not-operational 6,7
 
 RULE 0: the address is the RF credential of a real installation. Pass it on the command
 line or via SOMFY_ADDRESS_BASE in the environment — never commit it.
