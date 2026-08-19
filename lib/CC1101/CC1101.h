@@ -59,6 +59,7 @@ class CC1101 {
   uint8_t readStatus(uint8_t address);
 
  private:
+  uint8_t readStatusOnce(uint8_t address);
   bool waitReady();
   bool select();
   void deselect();

@@ -181,11 +181,10 @@ void CC1101::configure() {
   writeRegister(REG_FOCCFG, 0x14);
   writeRegister(REG_BSCFG, 0x1C);
 
-  // MAX_DVGA_GAIN = 3 caps the digital gain. Without it the AGC amplifies an empty band
-  // until noise crosses the decision boundary and GDO0 chatters — measured at a thousand
-  // times the interrupt rate. It costs ~18 dB of sensitivity (§17.4.1, Tables 32-33), which
-  // is the number to revisit if a distant control cannot be heard.
-  writeRegister(REG_AGCCTRL2, 0xC7);
+  // MAX_DVGA_GAIN 2, each step ~6 dB (§17.4.1, Tables 32-33). The knob to move if a distant
+  // control cannot be heard; the cost of moving it is the idle edge rate on /status, which
+  // reaches ~4700/s and mutes the receiver at 0.
+  writeRegister(REG_AGCCTRL2, 0x87);
   writeRegister(REG_AGCCTRL1, 0x00);
   // FILTER_LENGTH, which for OOK is the decision boundary rather than a length: 12 dB.
   writeRegister(REG_AGCCTRL0, 0xB2);
@@ -267,7 +266,21 @@ void CC1101::writeBurst(uint8_t address, const uint8_t *values, uint8_t count) {
 
 // Status registers share their addresses with the command strobes, so they are only
 // reachable with the burst bit set — a single-access read fires the strobe instead.
+// Read twice and require agreement: a read that lands on the chip's own update of that
+// register returns a wrong value (errata, "Status register read may be corrupted").
 uint8_t CC1101::readStatus(uint8_t address) {
+  uint8_t value = readStatusOnce(address);
+  for (uint8_t attempt = 0; attempt < 2; attempt++) {
+    const uint8_t again = readStatusOnce(address);
+    if (again == value) {
+      return value;
+    }
+    value = again;
+  }
+  return value;
+}
+
+uint8_t CC1101::readStatusOnce(uint8_t address) {
   uint8_t value = 0;
   if (select()) {
     SPI.transfer((uint8_t)(address | READ_BURST));

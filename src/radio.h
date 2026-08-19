@@ -34,6 +34,10 @@ class SomfyRadio {
   bool receive() { return _cc1101.receive(); }
   void release() { _cc1101.release(); }
 
+  // A chip that never entered receive and one that is deaf produce identical counters.
+  // 0x0D is RX.
+  uint8_t marcState() { return _cc1101.readStatus(CC1101_MARCSTATE); }
+
   // Plays one press: the wake-up burst, a frame, and the repeats a receiver needs to hear
   // it. Blocks for about eight hundred milliseconds, which is why commands are queued
   // rather than sent from wherever they arrive.

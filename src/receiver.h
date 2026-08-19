@@ -91,9 +91,10 @@ class Receiver {
     uint16_t ignored;        // presses from addresses nobody has asked to learn
     uint16_t peakRate;       // busiest 10 ms window ever seen, in edges
     uint32_t levelRepeats;   // how badly the front end is dropping edges
+    uint8_t marcState;       // read live from the chip: 0x0D is RX
     bool muted;
   };
-  Stats stats() const;
+  Stats stats();
   uint32_t edgesPerSecond() const { return _edgeRate; }
 
  private:

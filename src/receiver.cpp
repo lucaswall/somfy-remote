@@ -391,7 +391,7 @@ bool Receiver::takePress(SomfyPress *out) {
   return true;
 }
 
-Receiver::Stats Receiver::stats() const {
+Receiver::Stats Receiver::stats() {
   Stats s;
   s.interrupts = isrInterrupts;
   s.ringWrites = isrRingWrites;
@@ -406,6 +406,7 @@ Receiver::Stats Receiver::stats() const {
   s.ignored = _ignored;
   s.peakRate = isrPeakRate;
   s.levelRepeats = _decoder.levelRepeats();
+  s.marcState = _radio.marcState();
   s.muted = _cooling;
   return s;
 }

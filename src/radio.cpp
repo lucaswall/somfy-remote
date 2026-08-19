@@ -46,6 +46,14 @@ bool SomfyRadio::testDataPin() {
     return false;
   }
 
+  // **Every path that takes the chip or the wire stops the receiver first.** This one ends
+  // in release(), which idles the chip and hands the pin back to the ESP; a receiver left
+  // attached across it goes on reporting itself as listening and hears nothing.
+  ResumeReceiver resume{_receiver};
+  if (_receiver != nullptr) {
+    _receiver->suspend();
+  }
+
   pinMode(_dataPin, INPUT);
   _cc1101.driveGdo0(false);
   delayMicroseconds(50);
