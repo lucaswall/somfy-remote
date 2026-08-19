@@ -25,7 +25,8 @@ has ever run this firmware.
    key names.
 4. **Flash and verify, in this order.** `make radio` first — it proves the CC1101 is wired
    before any protocol code runs. Then `make run`, read the banner, and check the pinmap
-   line. Then, one at a time:
+   line. Then, one at a time — every command that moves a shutter is sent by a human, not
+   by the agent (RULE 1 in `CLAUDE.md`):
    - one remote, one Up, watched by eye;
    - the web UI: state, the console panel, `/status`, `/errors`;
    - the Home Assistant entities — all of them still present, cover state now reported,

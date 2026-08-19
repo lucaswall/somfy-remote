@@ -49,6 +49,36 @@ the author's house.
 
 ---
 
+## RULE 1 — THE AGENT NEVER MOVES A SHUTTER
+
+These are real, heavy motorised curtains in a real house. One that moves while somebody is
+standing in it can hurt them, and nothing in this repository can see where anybody is.
+**Only a human presses the button.** This rule outranks finishing the work, and it applies
+to every agent and every session — there is no test, no demo and no "just one" that is
+exempt.
+
+**Never cause a shutter to move.** That is every path that ends in a motor turning:
+
+- transmitting a Somfy frame — the firmware's send path, a `POST` to the device's web UI,
+  or any other tool that keys a transmitter
+- publishing to the command topics in `include/topics.h`, from any MQTT client
+- calling Home Assistant cover services (`cover.open_cover`, `close_cover`, `stop_cover`,
+  `set_cover_position`), or clicking them in the HA UI
+- triggering an automation, scene or script that reaches a cover
+- the Prog/My pairing sequence — the motor's acknowledgement *is* movement
+
+**What is safe.** `make test` is desktop logic. `make build`, `make upload`, `make ota`
+and `make log` are safe: flashing moves nothing. `make radio` is safe — it enters transmit
+to prove the synthesiser calibrates and sends no frame. Reading state is safe: the web UI,
+`/status`, `/errors`, MQTT state topics, HA entity state.
+
+**Hand the movement over.** When a step needs a shutter to move, write down the exact
+command or button press, what should happen, and what to look for — then ask the person at
+the keyboard to do it and report back. Verification by eye is theirs. If a task cannot
+progress without a shutter moving, stop and say so; do not work around it.
+
+---
+
 ## Two things that must not change
 
 This firmware replaces one that has been running since 2023, on a board that is already
