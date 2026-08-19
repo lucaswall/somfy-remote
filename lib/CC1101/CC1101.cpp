@@ -181,10 +181,10 @@ void CC1101::configure() {
   writeRegister(REG_FOCCFG, 0x14);
   writeRegister(REG_BSCFG, 0x1C);
 
-  // MAX_DVGA_GAIN 2, each step ~6 dB (§17.4.1, Tables 32-33). The knob to move if a distant
-  // control cannot be heard; the cost of moving it is the idle edge rate on /status, which
-  // reaches ~4700/s and mutes the receiver at 0.
-  writeRegister(REG_AGCCTRL2, 0x87);
+  // MAX_DVGA_GAIN 3 caps the digital gain, each step ~6 dB (§17.4.1, Tables 32-33). The
+  // knob to move if a distant control cannot be heard; lowering it costs interrupt rate,
+  // steeply — 0 puts ~4700 edges/s into the handler and the limiter mutes the receiver.
+  writeRegister(REG_AGCCTRL2, 0xC7);
   writeRegister(REG_AGCCTRL1, 0x00);
   // FILTER_LENGTH, which for OOK is the decision boundary rather than a length: 12 dB.
   writeRegister(REG_AGCCTRL0, 0xB2);

@@ -205,8 +205,13 @@ async function send(n, command){
 }
 
 async function loadLog(){
-  try { $('log').textContent = await (await fetch('/log')).text(); }
-  catch(e) {}
+  const el = $('log');
+  // Follow the tail, but only for somebody already at it: yanking the view out from under
+  // a person who scrolled up to read is worse than leaving it where they put it.
+  const following = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+  try { el.textContent = await (await fetch('/log')).text(); }
+  catch(e) { return; }
+  if (following) el.scrollTop = el.scrollHeight;
 }
 
 poll(); loadLog();
