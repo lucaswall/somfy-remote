@@ -199,8 +199,15 @@ void Receiver::suspend() {
 
 void Receiver::resume() {
   _suspended = false;
-  if (_armed && !_cooling) {
-    attach();
+  if (!_armed || _cooling) {
+    return;
+  }
+  if (!attach()) {
+    // A transmission that leaves the chip unable to return to receive is the radio failing,
+    // not the receiver. Cool off and retry on the backoff; the main loop's own radio retry
+    // will have re-run begin() by then if the chip really has gone.
+    _cooling = true;
+    _muteUntil = millis() + _backoffMs;
   }
 }
 
@@ -246,8 +253,16 @@ void Receiver::enforceRateLimit(uint32_t now) {
   }
 
   if (_cooling && (int32_t)(now - _muteUntil) >= 0) {
+    if (!attach()) {
+      // The chip would not go back into receive. Stay in cooling and let the backoff carry
+      // the retry, rather than sitting armed with nothing listening — a receiver that has
+      // silently stopped receiving is indistinguishable from a quiet house, which is the
+      // whole reason the counters on /status exist.
+      _muteUntil = now + _backoffMs;
+      _backoffMs = _backoffMs * 2 > 60000UL ? 60000UL : _backoffMs * 2;
+      return;
+    }
     _cooling = false;
-    attach();
     return;
   }
 
