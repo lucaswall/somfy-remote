@@ -231,18 +231,82 @@ static void a_truncated_frame_yields_nothing_and_recovers(void) {
   TEST_ASSERT_EQUAL_HEX32(0x0000AA, after[0].address);
 }
 
-// An edge lost mid-frame slips the bit phase by half a symbol, so every bit after it is
-// wrong and the checksum does not hold.
+// An edge lost mid-frame does NOT slip the bit phase, and that is the uncomfortable part.
 //
-// This used to be caught structurally, by noticing that two consecutive intervals arrived at
-// the same level when every edge flips the line. That check had to go: on real hardware the
-// glitch filter drops an arbitrary number of edges under noise, the recorded level alternates
-// only about a fifth of the time, and a decoder that vetoed on it decoded nothing whatsoever.
-// What is left is the checksum plus the requirement that two copies of a press agree, which
-// is what every implementation of this protocol has always relied on.
-static void a_lost_edge_fails_the_checksum(void) {
+// The receiver reconstructs intervals by differencing edge timestamps, so a swallowed edge
+// merges two adjacent intervals into their sum — 640 + 640 becomes 1280, which is a
+// perfectly legal full symbol. The frame runs its whole length, every interval classifies,
+// the levels still alternate, and the four-bit checksum cancels the damage often enough that
+// a good fraction of merges decode *clean* and *wrong*.
+//
+// This test exists to keep that fact visible. An earlier version claimed to cover a lost
+// edge and actually inserted an extra interval, which shifts the pairing and aborts — it
+// passed for a reason unrelated to its name, and the comment above it asserted the opposite
+// of what the code did.
+static void a_merged_edge_can_decode_clean_and_wrong(void) {
   uint8_t frame[SOMFY_FRAME_LEN];
-  somfyBuildFrame(SOMFY_UP, 0x0004, 0x0000BB, frame);
+  somfyBuildFrame(SOMFY_DOWN, 0x0193, 0x00BCDE, frame);
+
+  beginTransmission();
+  addGap(30);
+  addFrame(frame, SOMFY_REPEAT_SYNC);
+  const size_t whole = intervalCount;
+
+  uint16_t accepted = 0, wrong = 0;
+  for (size_t merge = 1; merge + 1 < whole; merge++) {
+    SomfyDecoder decoder;
+    SomfyHeard heard;
+    bool decoded = false;
+    for (size_t i = 0; i < whole; i++) {
+      if (i == merge) {
+        // The lost edge: this interval and the next arrive as one, at the first one's level.
+        const uint32_t merged = intervals[i].microseconds + intervals[i + 1].microseconds;
+        decoded |= decoder.feed(intervals[i].high, merged, &heard);
+        i++;
+        continue;
+      }
+      decoded |= decoder.feed(intervals[i].high, intervals[i].microseconds, &heard);
+    }
+    if (decoded) {
+      accepted++;
+      if (heard.address != 0x00BCDEu || heard.rollingCode != 0x0193 ||
+          heard.command != SOMFY_DOWN) {
+        wrong++;
+      }
+    }
+  }
+
+  // The exact counts depend on the frame, so this asserts the shape rather than a number:
+  // merges get through, and the ones that do are mostly lying about which remote pressed
+  // what. If either of these ever reads zero, something upstream started catching them and
+  // the two-copy rule could be revisited.
+  TEST_ASSERT_GREATER_THAN_UINT16(0, accepted);
+  TEST_ASSERT_GREATER_THAN_UINT16(0, wrong);
+}
+
+// ...which is why a press is only believed once two copies agree. A corrupted copy arriving
+// first must not be the one reported.
+static void a_corrupted_copy_does_not_win_over_clean_ones(void) {
+  SomfyPressAssembler assembler;
+  SomfyPress press;
+
+  // Same address and rolling code, different command — the exact shape a merge aligned to
+  // the start of byte 1 produces, because the command nibble and the checksum nibble move
+  // by the same amount and cancel.
+  const SomfyHeard corrupt = {0xB, 0x0193, 0x00BCDE};
+  const SomfyHeard clean = {SOMFY_DOWN, 0x0193, 0x00BCDE};
+
+  TEST_ASSERT_FALSE(assembler.feed(corrupt, 1000, &press));
+  TEST_ASSERT_FALSE(assembler.feed(clean, 1150, &press));
+  TEST_ASSERT_TRUE(assembler.feed(clean, 1300, &press));
+  TEST_ASSERT_EQUAL_UINT8(SOMFY_DOWN, press.command);
+}
+
+// The ring overflowing mid-frame, which P2.2 asked for and nobody wrote: the decoder must
+// give up rather than stitch the two halves into a frame that never existed.
+static void a_frame_cut_in_half_by_an_overflow_is_abandoned(void) {
+  uint8_t frame[SOMFY_FRAME_LEN];
+  somfyBuildFrame(SOMFY_UP, 0x0005, 0x00CCDD, frame);
 
   beginTransmission();
   addGap(30);
@@ -252,14 +316,11 @@ static void a_lost_edge_fails_the_checksum(void) {
   SomfyHeard heard;
   size_t decoded = 0;
   for (size_t i = 0; i < intervalCount; i++) {
+    if (i > intervalCount / 2 && i < intervalCount / 2 + 30) {
+      continue;   // thirty intervals that never reached the decoder
+    }
     if (decoder.feed(intervals[i].high, intervals[i].microseconds, &heard)) {
       decoded++;
-    }
-    // Halfway through the data, repeat a level: one edge simply never arrived.
-    if (i == intervalCount / 2) {
-      if (decoder.feed(intervals[i].high, SOMFY_SYMBOL_US, &heard)) {
-        decoded++;
-      }
     }
   }
   TEST_ASSERT_EQUAL_size_t(0, decoded);
@@ -410,7 +471,9 @@ int main(void) {
   RUN_TEST(refuses_to_decode_noise);
   RUN_TEST(decodes_a_frame_that_follows_noise);
   RUN_TEST(a_truncated_frame_yields_nothing_and_recovers);
-  RUN_TEST(a_lost_edge_fails_the_checksum);
+  RUN_TEST(a_merged_edge_can_decode_clean_and_wrong);
+  RUN_TEST(a_corrupted_copy_does_not_win_over_clean_ones);
+  RUN_TEST(a_frame_cut_in_half_by_an_overflow_is_abandoned);
   RUN_TEST(five_copies_of_one_press_report_it_once);
   RUN_TEST(one_copy_is_not_a_press);
   RUN_TEST(consecutive_presses_are_two_presses);

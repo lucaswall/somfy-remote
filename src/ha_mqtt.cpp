@@ -58,6 +58,14 @@ static_assert(sizeof(MQTT_DEVICE_ID) + sizeof("/remote29/my_state") - 1 <= TOPIC
 static_assert(sizeof(MQTT_DEVICE_ID) + sizeof("29_cover") - 1 <= OBJECT_ID_LEN,
               "MQTT_DEVICE_ID is too long: see OBJECT_ID_LEN in include/topics.h");
 
+// The learned controls are longer than either, and were added without moving these. A
+// truncated control unique_id collapses two physical remotes onto one Home Assistant entity,
+// which is the collision the assert above exists to prevent.
+static_assert(sizeof(MQTT_DEVICE_ID) + sizeof("/control/000000/press") - 1 <= TOPIC_LEN,
+              "MQTT_DEVICE_ID is too long for the control press topic");
+static_assert(sizeof(MQTT_DEVICE_ID) + sizeof("_ctl_000000") - 1 <= OBJECT_ID_LEN,
+              "MQTT_DEVICE_ID is too long for the control unique_id");
+
 // What the board already believes, read back out of the store. Without this the device
 // starts every boot claiming to have no configuration, re-adopts the retained document it
 // already applied, and cannot compare epochs meaningfully — its own copy would always
@@ -75,11 +83,27 @@ void HaMqtt::loop() {
   if (!_loaded) {
     loadConfigFromStore();
   }
+
+  // Before every return below. A press somebody made on a handheld is a fact about a
+  // shutter, and it should reach the cover state whether or not the broker is reachable —
+  // publish() no-ops while disconnected, and the state itself is what the reconnect
+  // republishes. Left below the guards, an outage discarded presses entirely.
+  applyHeardPresses();
+
   if (WiFi.status() != WL_CONNECTED) {
     return;
   }
 
   if (!_mqtt.connected()) {
+    // Commands are held only while a live reconciliation is deciding whose counters win.
+    // A session dropped inside that window used to leave the hold set until a reconnect
+    // completed — every press queued, then replayed minutes later, moving shutters long
+    // after somebody pressed the button and walked away.
+    if (_reconciling) {
+      _reconciling = false;
+      _remotes.hold(false);
+      logError("mqtt      : connection lost mid-reconcile, commands released");
+    }
     const uint32_t now = millis();
     if (_attempted && !elapsed(now, _lastAttempt, _retryMs)) {
       return;
@@ -136,8 +160,6 @@ void HaMqtt::loop() {
     publishCounter(i);
   }
 
-  applyHeardPresses();
-
   if (elapsed(millis(), _lastHealth, HEALTH_PUBLISH_MS)) {
     _lastHealth = millis();
     publishHealth();
@@ -185,20 +207,33 @@ void HaMqtt::applyHeardPresses() {
 // device believes even if the broker refuses. False means the retained copy did not land —
 // the RAM map is authoritative for reads only, and with no broker a save has nowhere
 // durable to go.
+// Writes one control's retained topic and its Home Assistant entity. Shared by the naming
+// UI and by the reconnect path, because a control that exists only in RAM is a control that
+// disappears with the next restart.
+bool HaMqtt::republishControl(const ctl::Control &control) {
+  char topic[TOPIC_LEN], payload[ctl::PAYLOAD_LEN];
+  topicControl(topic, sizeof(topic), MQTT_DEVICE_ID, control.address);
+  const size_t written = ctl::serialise(control, payload, sizeof(payload));
+  if (written == 0 || !_mqtt.publish(topic, payload, true)) {
+    return false;
+  }
+  return publishControlDiscovery(control);
+}
+
 bool HaMqtt::saveControl(const ctl::Control &control) {
   if (!_controls.set(control)) {
     logError("mqtt      : no room for another control, %u already", _controls.count());
     return false;
   }
 
-  char topic[TOPIC_LEN], payload[ctl::PAYLOAD_LEN];
-  topicControl(topic, sizeof(topic), MQTT_DEVICE_ID, control.address);
-  const size_t written = ctl::serialise(control, payload, sizeof(payload));
-  if (written == 0 || !_mqtt.publish(topic, payload, true)) {
+  if (!republishControl(control)) {
+    // Left in the RAM map deliberately — the page shows what the device believes, and the
+    // reconnect path rewrites every control's retained topic, so this repairs itself the
+    // moment the broker comes back. What must not happen is reporting success, which is why
+    // this returns false and the page says so.
     logError("mqtt      : control \"%s\" was not saved to the broker", control.name);
     return false;
   }
-  publishControlDiscovery(control);
   logLine("control   : \"%s\" saved", control.name);
   return true;
 }
@@ -218,9 +253,17 @@ bool HaMqtt::forgetControl(uint32_t address) {
 // that would lower the retained value means something is wrong — a stale local store, a
 // remote that was re-added, a mirror that has moved on — and sending it would destroy the
 // one copy that survives the board.
-void HaMqtt::publishCounter(uint8_t remote) {
+void HaMqtt::publishCounter(uint8_t remote, bool force) {
   const uint32_t value = _remotes.counter(remote);
-  if (!_remotes.hasCounter(remote) || value <= _mirrorSeen[remote]) {
+  if (!_remotes.hasCounter(remote)) {
+    return;
+  }
+  // `force` is for the one case the floor must not veto: a reconnect that found no retained
+  // mirror at all. That is what a broker rebuilt without persistence looks like, and the
+  // floor — which only ever rises — would otherwise suppress the republish for every remote
+  // whose counter has not advanced since, leaving the only off-board copy of an
+  // irreplaceable value permanently absent while the log says it was corrected.
+  if (!force && value <= _mirrorSeen[remote]) {
     return;
   }
   char topic[TOPIC_LEN], payload[12];
@@ -344,7 +387,14 @@ void HaMqtt::reconcileCounters() {
         rs::reconcile(_remotes.hasCounter(i), _remotes.counter(i), _haveMirror[i],
                       _mirror[i], MAX_ADOPT_JUMP, &effective);
 
-    if (_haveMirror[i] && _mirror[i] > _mirrorSeen[i]) {
+    // The floor is raised inside the switch, never for a refused mirror. Raised
+    // unconditionally, a value the jump check had just rejected as absurd would still become
+    // the floor — suppressing every future publish for that remote, being re-read from the
+    // retained topic on every boot, and leaving a replacement board to adopt it through
+    // reconcile()'s no-local-baseline branch, which has no jump check at all. That is a walk
+    // to every motor.
+    const bool raiseFloor = action != rs::REC_REFUSE_JUMP;
+    if (raiseFloor && _haveMirror[i] && _mirror[i] > _mirrorSeen[i]) {
       _mirrorSeen[i] = _mirror[i];
     }
 
@@ -355,7 +405,7 @@ void HaMqtt::reconcileCounters() {
         }
         break;
       case rs::REC_KEEP_PUBLISH:
-        publishCounter(i);
+        publishCounter(i, true);
         corrected++;
         break;
       case rs::REC_REFUSE_JUMP:
@@ -390,28 +440,36 @@ void HaMqtt::reconcileConfig() {
     case cfg::CFG_ADOPT: {
       rs::LiveMap projected;
       cfg::project(_staged, &projected);
-      bool ok = true;
+
+      // The epoch is invalidated first, written last, and skipped by the loop between.
+      //
+      // "Epoch last" was the intent and the loop defeated it: project() emits the epoch as
+      // its third record, so the loop committed it before the sixty address and flag records
+      // that give it meaning, and the guarded write below then found it already correct and
+      // did nothing. A power loss part-way through left a half-new configuration wearing the
+      // new epoch — and because decide() returns VERIFY_ONLY at equal epochs, nothing would
+      // ever repair it while some remotes transmitted on an address in neither document.
+      //
+      // Zeroing it first is what makes a tear *visible*. Leaving the old epoch in place
+      // would be indistinguishable from a clean older configuration; zero is younger than
+      // anything the broker holds, so the next boot adopts and finishes the job.
+      bool ok = _store.put(rs::NS_SCALAR, rs::SCALAR_CONFIG_EPOCH, 0);
+
       // Diff-then-append: only records that actually change cost a slot, so a one-remote
       // edit does not rewrite the whole configuration.
-      for (uint8_t i = 0; i < projected.count(); i++) {
+      for (uint8_t i = 0; ok && i < projected.count(); i++) {
         const rs::Entry &e = projected.at(i);
+        if (e.ns == rs::NS_SCALAR && e.id == rs::SCALAR_CONFIG_EPOCH) {
+          continue;   // written last, alone, and only once the body is durable
+        }
         if (_store.valueOr(e.ns, e.id, 0xFFFFFFFEu) == e.value) {
           continue;
         }
         if (!_store.put(e.ns, e.id, e.value)) {
           ok = false;
-          break;
         }
       }
-      // The epoch is written last and alone. A power loss part-way through the records
-      // above leaves the previous epoch committed, so replay sees the old configuration
-      // rather than half of the new one — which matters because a half-applied config
-      // would key some remotes to the wrong RF address.
-      const bool epochUnchanged =
-          _store.valueOr(rs::NS_SCALAR, rs::SCALAR_CONFIG_EPOCH, 0xFFFFFFFFu) ==
-          _staged.epoch;
-      if (ok && (epochUnchanged ||
-                 _store.put(rs::NS_SCALAR, rs::SCALAR_CONFIG_EPOCH, _staged.epoch))) {
+      if (ok && _store.put(rs::NS_SCALAR, rs::SCALAR_CONFIG_EPOCH, _staged.epoch)) {
         _config = _staged;
         _haveConfig = true;
         logLine("mqtt      : config epoch %lu adopted from %s, %u remotes",
@@ -712,8 +770,12 @@ void HaMqtt::publishBridgeDiscovery() {
 // nibble the protocol defines rather than the four this firmware transmits — a handheld
 // sends My+Up, My+Down, Up+Down, Sun and Flag too, and an entity that dropped them would
 // throw away exactly what makes a multi-button remote interesting.
-void HaMqtt::publishControlDiscovery(const ctl::Control &control) {
-  static const char *const NIBBLES[9] = {"1", "2", "3", "4", "5", "6", "8", "9", "a"};
+bool HaMqtt::publishControlDiscovery(const ctl::Control &control) {
+  // All sixteen, not the nine docs/somfy-rts.md documents. An unlisted event_type is
+  // dropped by Home Assistant with a log warning, which would read as a radio fault, and
+  // the nibble space is what the wire can carry rather than what anybody has catalogued.
+  static const char *const NIBBLES[16] = {"0", "1", "2", "3", "4", "5", "6", "7",
+                                          "8", "9", "a", "b", "c", "d", "e", "f"};
 
   char availability[TOPIC_LEN], press[TOPIC_LEN];
   topicAvailability(availability, sizeof(availability), MQTT_DEVICE_ID);
@@ -729,7 +791,7 @@ void HaMqtt::publishControlDiscovery(const ctl::Control &control) {
   doc["name"] = control.name;
   doc["icon"] = "mdi:remote";
   JsonArray types = doc["event_types"].to<JsonArray>();
-  for (uint8_t i = 0; i < 9; i++) {
+  for (uint8_t i = 0; i < 16; i++) {
     types.add(NIBBLES[i]);
   }
 
@@ -739,9 +801,11 @@ void HaMqtt::publishControlDiscovery(const ctl::Control &control) {
   doc["unique_id"] = object;
   discoveryTopic(topic, sizeof(topic), HA_DISCOVERY_PREFIX, "event", object);
   const size_t written = serializeJson(doc, payload, sizeof(payload));
-  if (written < sizeof(payload) - 1) {
-    _mqtt.publish(topic, payload, true);
+  if (written >= sizeof(payload) - 1) {
+    logError("mqtt      : control entity payload did not fit");
+    return false;
   }
+  return _mqtt.publish(topic, payload, true);
 }
 
 void HaMqtt::publishControlRemoval(uint32_t address) {
@@ -815,7 +879,11 @@ void HaMqtt::onMessage(const char *topic, const uint8_t *payload, unsigned int l
     const size_t idLength = strlen(MQTT_DEVICE_ID);
     if (strncmp(topic, MQTT_DEVICE_ID, idLength) == 0) {
       char expectedState[TOPIC_LEN];
-      for (uint8_t i = 0; i < _remotes.count(); i++) {
+      // Bounded by MAX_REMOTES, not count(). Retained state arrives inside the 3 s window,
+      // before reconcileConfig() has run, so on a blank replacement board count() is still 0
+      // and every cover's restored position would be dropped — the counter path already
+      // stages into _mirror[] by the same argument.
+      for (uint8_t i = 0; i < rs::MAX_REMOTES; i++) {
         topicCoverState(expectedState, sizeof(expectedState), MQTT_DEVICE_ID, i);
         if (strcmp(topic, expectedState) != 0) {
           continue;

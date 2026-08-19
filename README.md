@@ -125,8 +125,13 @@ OTA, so one bad flash puts you back on USB.
 ## Pairing a shutter
 
 1. Hold Prog on a remote the motor already knows until the shutter jogs.
-2. Press the Prog button of the remote you want to add, in Home Assistant or on the web
-   page, within a couple of seconds. The shutter jogs again.
+2. Press the Prog button of the remote you want to add, on the device's `/settings` page,
+   within a couple of seconds. The shutter jogs again.
+
+   It is only there. Home Assistant gets no Prog button — pairing is configuration, not
+   something the bridge *does* — and the MQTT command topic refuses `Prog` for the same
+   reason. Somebody standing at a motor with two seconds to spare should not have to
+   discover that the hard way.
 
 Sending Prog to a motor that already knows that address unpairs it, which is why the web
 UI asks first.

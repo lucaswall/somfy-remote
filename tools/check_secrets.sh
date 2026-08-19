@@ -4,7 +4,15 @@
 # This only catches the mistake gitignore cannot: a real address or credential typed into a
 # tracked file.
 #
+# **It reads tracked files in the working tree, and nothing else.** Not commit messages, not
+# history, not staged-but-unwritten content. A value already committed is past this gate, and
+# the only remedy then is rewriting history before the repository is published. Read your own
+# diff; this catches shapes, not intent.
+#
 #   tools/check_secrets.sh
+#
+# Example addresses in tracked files start 00 — that is the convention the patterns below
+# rely on to tell a placeholder from a real one, and it is why docs use control/000000.
 
 set -uo pipefail
 cd "$(git rev-parse --show-toplevel)" || exit 2
@@ -36,10 +44,16 @@ rfid='"(base|addr)"[[:space:]]*:[[:space:]]*"0[xX][0-9a-fA-F]'
 # address is obviously synthetic. Here that means it starts 00, which no address in this
 # installation does — so a real one pasted into a doc, a test or a commit message fires.
 ctl='/control/([1-9a-fA-F][0-9a-fA-F]|[0-9a-fA-F][1-9a-fA-F])[0-9a-fA-F]{4}'
-allow='192\.0\.2\.|198\.51\.100\.|203\.0\.113\.|0\.0\.0\.0|127\.0\.0\.1|255\.255\.255\.255|<[A-Z_]+>|your-|placeholder|xx:xx|change-me|"0x000000"|/control/00[0-9a-fA-F]{4}|/control/[+<{$]'
+# The same address written the other three ways it actually appears: the decimal form the
+# save endpoint parses and /api/heard emits, an "address" JSON key, and a bare macro of the
+# kind the 2023 firmware used. Only the topic shape was covered, which is one of four.
+ctldec='address=[0-9]{6,8}|"a":[0-9]{6,8}'
+addrkey='"(address|remote|base|addr)"[[:space:]]*:[[:space:]]*"?0[xX][0-9a-fA-F]{4,6}'
+addrmacro='#define[[:space:]]+[A-Z_]*(ADDRESS|REMOTE)[A-Z_]*[[:space:]]+0[xX][0-9a-fA-F]{4,6}'
+allow='192\.0\.2\.|198\.51\.100\.|203\.0\.113\.|0\.0\.0\.0|127\.0\.0\.1|255\.255\.255\.255|<[A-Z_]+>|your-|placeholder|xx:xx|change-me|"0x000000"|/control/00[0-9a-fA-F]{4}|/control/[+<{$]|0[xX]0{4,6}|address=0|"a":0'
 
 fail=0
-for pat in "$ipv4" "$mac" "$cred" "$rfid" "$ctl"; do
+for pat in "$ipv4" "$mac" "$cred" "$rfid" "$ctl" "$ctldec" "$addrkey" "$addrmacro"; do
   # The allowlist is matched against the line's text only. git grep prefixes every hit with
   # "path:line:", and matching that too would exempt whole files whose *path* happens to
   # contain an allowed word.

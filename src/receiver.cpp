@@ -407,13 +407,17 @@ void Receiver::applyEdges() {
     if (_assembler.feed(heard, now, &press)) {
       _presses++;
       recordSighting(press);
+      // Full means the oldest goes, not the newest. The ISR ring drops the newest because
+      // its producer cannot safely touch the consumer's index; both ends of this one run in
+      // the main loop, and the press that describes where a shutter finally came to rest is
+      // the last one, not the first.
       const uint8_t next = (uint8_t)((_pressHead + 1) % PRESS_SLOTS);
       if (next == _pressTail) {
-        _pressesDropped++;   // never seen in practice, but silence here would be a lie
-      } else {
-        _pending[_pressHead] = press;
-        _pressHead = next;
+        _pressTail = (uint8_t)((_pressTail + 1) % PRESS_SLOTS);
+        _pressesDropped++;
       }
+      _pending[_pressHead] = press;
+      _pressHead = next;
     }
   }
 }

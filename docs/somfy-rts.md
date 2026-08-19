@@ -21,10 +21,17 @@ Seven bytes, transmitted most significant bit first.
 
 | Byte | Contents |
 |---|---|
-| 0 | `0xA7`. Often called an encryption key; it is neither secret nor checked |
+| 0 | `0xA0` \| something. Often called an encryption key; it is neither secret nor checked |
 | 1 | Command in the high nibble, checksum in the low nibble |
 | 2–3 | Rolling code, big endian |
 | 4–6 | The remote's 24-bit address, big endian |
+
+**The key byte's low nibble varies.** Every transmitter in the wild, this one included,
+sends `0xA7` — but real handhelds do not hold it constant: captures show one remote sending
+`0xA1` then `0xA3` on consecutive presses, and ESPSomfy-RTS transmits `0xA0 | (rolling code
+& 0x0F)`. A receiver may therefore test the high nibble and must ignore the low one. Testing
+the whole byte throws away fifteen presses in sixteen, and the low nibble is the one part of
+a frame that can be corrupted with no consequence at all.
 
 **Checksum.** XOR of all fourteen nibbles of the frame, computed while the checksum nibble
 itself is still zero, then written into that nibble. A correct frame therefore XORs down to

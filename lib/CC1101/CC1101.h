@@ -23,7 +23,6 @@
 #define CC1101_MARCSTATE 0x35
 
 // MARCSTATE values worth naming. Table for 0x35 in the datasheet.
-#define CC1101_STATE_IDLE 0x01
 #define CC1101_STATE_RX 0x0D
 #define CC1101_STATE_TX 0x13
 
@@ -59,8 +58,6 @@ class CC1101 {
   void driveGdo0(bool high);
 
   void idle();
-
-  uint8_t state() { return readStatus(CC1101_MARCSTATE); }
 
   // True when the version register reads back a value a real CC1101 returns. 0x00 means
   // MISO is stuck low or the module is unpowered; 0xFF means it is floating.

@@ -135,13 +135,17 @@ void loop() {
 
   if (elapsed(now, lastHealth, HEALTH_MS)) {
     lastHealth = now;
-    logLine("health    : heap %lu low %lu rssi %d wifi %s mqtt %s radio %s queued %u "
-            "faults %u store %c/%u free%s loops %lu/s",
+    // Written to fit LOG_LINE_LEN. It did not, and the overflow took the loop rate and the
+    // DEGRADED flag off the end of every copy — the ring's and the serial console's, since
+    // logLine() prints the buffer it formatted into. Terse on purpose: three "up/down"
+    // words and the word "queued" were most of the excess.
+    logLine("health    : heap %lu/%lu rssi %d w%c m%c r%c q%u f%u store %c/%u %lu/s%s",
             (unsigned long)ESP.getFreeHeap(), (unsigned long)heapLowWater, net.rssi(),
-            net.connected() ? "up" : "down", mqtt.connected() ? "up" : "down",
-            radio.ready() ? "up" : "down", remotes.pending(), errorBuffer().count(),
-            store.activeName(), store.freeSlots(), store.degraded() ? " DEGRADED" : "",
-            (unsigned long)(loops / (HEALTH_MS / 1000)));
+            net.connected() ? '+' : '-', mqtt.connected() ? '+' : '-',
+            radio.ready() ? '+' : '-', remotes.pending(), errorBuffer().count(),
+            store.activeName(), store.freeSlots(),
+            (unsigned long)(loops / (HEALTH_MS / 1000)),
+            store.degraded() ? " DEGRADED" : "");
     loops = 0;
     if (receiver.armed()) {
       const Receiver::Stats rx = receiver.stats();

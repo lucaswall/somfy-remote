@@ -66,10 +66,29 @@ void setup() {
     return;
   }
 
-  Serial.println(F("RESULT: PASS — CC1101 is wired, configured and reaches transmit."));
-  // GDO0 is a plain data line the chip never reads back, so no register test can tell
-  // whether it is connected. It is the CE of this build: check it by eye.
-  Serial.printf("Not covered: GDO0 on GPIO%u. Nothing can test it from here.\n", PIN_DATA);
+  // GDO0 used to be the one wire nothing here could check. It is not any more: the chip can
+  // drive it to a known level both ways round, so the ESP can read it back with no RF
+  // involved at all. That is worth doing in the self-test as well as at boot, because this
+  // is the sketch somebody runs when the radio is the suspect.
+  pinMode(PIN_DATA, INPUT);
+  radio.driveGdo0(false);
+  delayMicroseconds(50);
+  const bool low = digitalRead(PIN_DATA) != 0;
+  radio.driveGdo0(true);
+  delayMicroseconds(50);
+  const bool high = digitalRead(PIN_DATA) != 0;
+  radio.release();
+  digitalWrite(PIN_DATA, LOW);
+  pinMode(PIN_DATA, OUTPUT);
+
+  if (low || !high) {
+    Serial.printf("RESULT: FAIL — GDO0 on GPIO%u does not read back. Check that wire.\n",
+                  PIN_DATA);
+    return;
+  }
+
+  Serial.println(F("RESULT: PASS — CC1101 is wired, configured, reaches transmit,"));
+  Serial.printf("        and GDO0 on GPIO%u reads back both ways.\n", PIN_DATA);
 }
 
 void loop() {

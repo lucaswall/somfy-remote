@@ -70,9 +70,10 @@ class HaMqtt {
   void loadConfigFromStore();
   void publishDiscovery(uint8_t remote);
   void publishState(uint8_t remote);
-  void publishCounter(uint8_t remote);
+  void publishCounter(uint8_t remote, bool force = false);
   void publishBridgeDiscovery();
-  void publishControlDiscovery(const ctl::Control &control);
+  bool publishControlDiscovery(const ctl::Control &control);
+  bool republishControl(const ctl::Control &control);
   void publishControlRemoval(uint32_t address);
   void applyHeardPresses();
   void publishHealth();

@@ -9,6 +9,11 @@
 // without fragmenting the heap.
 #define LOG_LINES 80
 #define ERROR_LINES 24
+// One hundred, and every line this firmware formats has to fit it. Widening is not the
+// cheap option it looks: the ring is eighty lines, so each extra byte costs eighty, and
+// logLine() prints the same buffer it formats into — so a line that does not fit is
+// truncated on the serial console as well as in the ring, silently, from the right.
+// The health summary is written against this limit for exactly that reason.
 #define LOG_LINE_LEN 100
 
 // Templated on depth so a second, smaller ring for faults costs no duplicated code.

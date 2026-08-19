@@ -103,6 +103,41 @@ static void an_overheard_my_does_not_invent_a_position(void) {
   TEST_ASSERT_EQUAL(COVER_CLOSED, state.position());
 }
 
+
+// --- restore ----------------------------------------------------------------------------
+
+// restore() runs on every reconnect, for every remote, from the retained cover state. Its
+// whole behaviour is one guard — and without it every cover would be rewound to whatever the
+// broker last retained each time the connection blinked, silently, with the rest of the
+// suite still green. It had no test at all.
+static void restore_only_fills_an_unknown_position(void) {
+  RemoteState state;
+  state.restore(COVER_OPEN);
+  TEST_ASSERT_EQUAL(COVER_OPEN, state.position());
+}
+
+static void restore_never_overwrites_what_we_did(void) {
+  RemoteState state;
+  state.record(SOMFY_DOWN);
+  state.restore(COVER_OPEN);
+  TEST_ASSERT_EQUAL(COVER_CLOSED, state.position());
+
+  // Nor what we overheard somebody else do.
+  RemoteState heard;
+  heard.observe(SOMFY_UP);
+  heard.restore(COVER_CLOSED);
+  TEST_ASSERT_EQUAL(COVER_OPEN, heard.position());
+}
+
+// Nothing was transmitted, so no press may be implied — otherwise a reconnect would look
+// like activity and republish state that nobody caused.
+static void restore_does_not_advance_the_version(void) {
+  RemoteState state;
+  const uint32_t before = state.version();
+  state.restore(COVER_OPEN);
+  TEST_ASSERT_EQUAL_UINT32(before, state.version());
+}
+
 int main(void) {
   UNITY_BEGIN();
   RUN_TEST(starts_unknown);
@@ -114,5 +149,8 @@ int main(void) {
   RUN_TEST(an_overheard_press_advances_the_version);
   RUN_TEST(an_unknown_command_leaves_the_position_alone);
   RUN_TEST(an_overheard_my_does_not_invent_a_position);
+  RUN_TEST(restore_only_fills_an_unknown_position);
+  RUN_TEST(restore_never_overwrites_what_we_did);
+  RUN_TEST(restore_does_not_advance_the_version);
   return UNITY_END();
 }
