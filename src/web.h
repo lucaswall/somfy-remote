@@ -45,6 +45,7 @@ class WebUi {
  private:
   void start();
   bool settingsAuthorised();
+  bool sameOrigin();
   void handleState();
   void handleSend();
   void handleLog();

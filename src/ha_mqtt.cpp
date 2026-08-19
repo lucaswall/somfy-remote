@@ -543,6 +543,10 @@ void HaMqtt::publishDiscovery(uint8_t remote) {
   // configuration. It lives on the device's own settings page, behind a password, next to
   // the address it pairs. A one-tap unconfirmed button in a dashboard is the wrong home
   // for the one action here that cannot be undone by pressing something else.
+  //
+  // Not publishing a button was never the whole of that, though: the command topic is a
+  // control surface too, and it accepted "Prog" from any broker client until onMessage()
+  // was taught to refuse it.
   for (uint8_t entity = 0; entity < 3; entity++) {
     JsonDocument doc;
     JsonObject device = doc["device"].to<JsonObject>();
@@ -789,6 +793,17 @@ void HaMqtt::onMessage(const char *topic, const uint8_t *payload, unsigned int l
     SomfyCommand command;
     if (!somfyCommandFromText((const char *)payload, length, &command)) {
       logError("mqtt      : remote %u sent a payload that is not a button", remote);
+      return;
+    }
+    // Prog enrols or *unenrols* an emulated remote at a motor, and unenrolling costs a walk
+    // to that shutter with a working handheld. Both web paths refuse it here — /api/send
+    // rejects it outright and the settings page confirms first — and this one accepted it
+    // from any client that can reach the broker. Two lines in Developer Tools should not be
+    // able to do the one thing in this project that cannot be undone by pressing something
+    // else.
+    if (command == SOMFY_PROG) {
+      logError("mqtt      : remote %u Prog refused — pairing is a settings-page operation",
+               remote);
       return;
     }
     _remotes.queue(remote, command);

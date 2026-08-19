@@ -11,8 +11,14 @@
 #define SOMFY_FRAME_BITS 56
 
 // Byte 0. Upstream calls it an encryption key; it is neither secret nor checked by the
-// receiver, and every implementation in the wild sends 0xA7.
+// motor. What this firmware transmits is 0xA7, which is what every implementation in the
+// wild also transmits — but a real handheld does not hold it constant. Captures from a
+// dedicated RTS receiver show one remote sending 0xA1 then 0xA3 on consecutive presses,
+// and ESPSomfy-RTS transmits 0xA0 | (rollingCode & 0x0F). Only the high nibble is fixed,
+// which is all a receiver may test.
 #define SOMFY_KEY 0xA7
+#define SOMFY_KEY_MASK 0xF0
+#define SOMFY_KEY_HIGH 0xA0
 
 // The buttons this bridge exposes. The protocol defines five more (MyUp 0x3, MyDown 0x5,
 // UpDown 0x6, SunFlag 0x9, Flag 0xA); they are in docs/somfy-rts.md rather than here,
@@ -66,7 +72,10 @@ struct SomfyHeard {
 // defect to fix here — there is no more entropy in the protocol to check against — it is
 // why a press is only believed after two copies agree.
 inline bool somfyParseFrame(const uint8_t *frame, SomfyHeard *out) {
-  if (frame[0] != SOMFY_KEY) {
+  // The high nibble only. Testing the whole byte would throw away fifteen of every sixteen
+  // real presses; the cost is that this test's rejection power drops from 1/256 to 1/16,
+  // which is why the two-copy rule compares address, rolling code *and* command.
+  if ((frame[0] & SOMFY_KEY_MASK) != SOMFY_KEY_HIGH) {
     return false;
   }
 

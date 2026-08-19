@@ -55,6 +55,10 @@
 // and it is the case the assembler already sizes for.
 #define PRESS_SLOTS 4
 
+// How long a heard press keeps the receiver listening. Long enough to walk to the far end
+// of a house and back before the window closes behind you.
+#define PRESS_EXTENDS_MS (10UL * 60 * 1000)
+
 static volatile uint32_t ringEntries[RING_SIZE];
 static volatile uint16_t ringHead = 0;
 static uint16_t ringTail = 0;   // written only by the main loop
@@ -86,9 +90,16 @@ static void IRAM_ATTR onEdge() {
     if (isrWindowEdges > isrPeakRate) {
       isrPeakRate = isrWindowEdges;
     }
-    // Consecutive, not cumulative: one busy window in the middle of a quiet minute says
-    // somebody pressed a button, and that is the opposite of a reason to stop listening.
-    isrOverBudget = isrWindowEdges > EDGE_BUDGET ? (uint16_t)(isrOverBudget + 1) : 0;
+    // Leaky rather than consecutive. One busy window in a quiet minute says somebody pressed
+    // a button, and that is the opposite of a reason to stop listening — but a storm that
+    // straddles the budget, which is exactly what this board's ambient noise does, would
+    // never escalate at all if a single window at or under budget reset the count to zero.
+    // Decaying instead means sustained pressure still accumulates and a burst still does not.
+    if (isrWindowEdges > EDGE_BUDGET) {
+      isrOverBudget++;
+    } else if (isrOverBudget > 0) {
+      isrOverBudget--;
+    }
     isrWindowStart = now;
     isrWindowEdges = 0;
   }
@@ -132,7 +143,12 @@ bool Receiver::arm(uint16_t minutes) {
     return false;
   }
 
-  _expiresAt = millis() + (uint32_t)minutes * 60000UL;
+  // Only ever forward. Tapping "15 min" to top up an hour that is already running used to
+  // cut it to fifteen, which is the opposite of what the button says.
+  const uint32_t until = millis() + (uint32_t)minutes * 60000UL;
+  if (!_armed || (int32_t)(until - _expiresAt) > 0) {
+    _expiresAt = until;
+  }
   if (_armed) {
     return true;   // extending the window, not restarting the radio mid-frame
   }
@@ -157,6 +173,7 @@ void Receiver::disarm() {
   }
   _armed = false;
   _cooling = false;
+  _edgeRate = 0;   // nothing is being counted, so reporting the last figure would be a lie
   detach();
   logLine("receiver  : stopped listening");
 }
@@ -179,6 +196,11 @@ bool Receiver::attach() {
   pinMode(_dataPin, INPUT);
   if (!_radio.receive()) {
     logError("receiver  : CC1101 would not enter receive");
+    // receive() has already written IOCFG0 = serial data and strobed SRX, so the chip is
+    // driving GDO0 whatever MARCSTATE says. Taking the pin back without releasing it first
+    // is the one short INV-1 exists to forbid, and this was the only exit in the file that
+    // did it.
+    _radio.release();
     digitalWrite(_dataPin, LOW);
     pinMode(_dataPin, OUTPUT);
     return false;
@@ -341,7 +363,11 @@ void Receiver::applyEdges() {
     // Restart the capture where the data does. A sync burst is sixteen intervals of nothing
     // anybody needs to see, and letting it share the buffer with the frame means the frame
     // is cut off at the far end — which reads exactly like corruption and is not.
-    if (!_captureFrozen && _decoder.takeFrameStart()) {
+    // Consumed unconditionally and acted on conditionally: latched through a freeze, the
+    // flag would fire on whatever interval happened to arrive after somebody read the
+    // capture, and present it as a frame boundary.
+    const bool frameStarted = _decoder.takeFrameStart();
+    if (frameStarted && !_captureFrozen) {
       _captureHead = 0;
       _captureFilled = false;
       _capture[_captureHead++] = (uint16_t)(clamped | (high ? 0x8000u : 0u));
@@ -394,6 +420,15 @@ void Receiver::applyEdges() {
 
 void Receiver::recordSighting(const SomfyPress &press) {
   const uint32_t now = millis();
+
+  // A press is the signal that somebody is still working, and during the phoneless naming
+  // walk it is the only signal there is — the page is in a pocket and generates nothing.
+  // Without this the window expires mid-house and every control pressed afterwards is heard
+  // by nobody, discovered only by a list missing rows nobody knew were missing.
+  const uint32_t extended = now + PRESS_EXTENDS_MS;
+  if (_armed && (int32_t)(extended - _expiresAt) > 0) {
+    _expiresAt = extended;
+  }
 
   for (uint8_t i = 0; i < _sightingCount; i++) {
     if (_sightings[i].address == press.address) {
@@ -448,7 +483,8 @@ Receiver::Stats Receiver::stats() const {
   s.overflows = isrOverflows;
   s.frames = _frames;
   s.presses = _presses;
-  s.aborted = _decoder.aborted();
+  s.abandoned = _decoder.abandoned();
+  s.badChecksum = _decoder.badChecksum();
   s.mutes = _mutes;
   s.ownAddress = _ownAddress;
   s.pressesDropped = _pressesDropped;

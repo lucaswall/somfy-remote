@@ -28,11 +28,14 @@ static const uint8_t REG_MDMCFG2 = 0x12;
 static const uint8_t REG_MDMCFG1 = 0x13;
 static const uint8_t REG_MDMCFG0 = 0x14;
 static const uint8_t REG_MCSM0 = 0x18;
+// Datasheet §29 register map, and worth reading twice: these four are consecutive and it is
+// very easy to be off by one. FOCCFG 0x19, BSCFG 0x1A, AGCCTRL2 0x1B, AGCCTRL1 0x1C,
+// AGCCTRL0 0x1D, and 0x1E is WOREVT1 — nothing to do with the AGC at all.
 static const uint8_t REG_FOCCFG = 0x19;
-static const uint8_t REG_BSCFG = 0x1B;
-static const uint8_t REG_AGCCTRL2 = 0x1C;
-static const uint8_t REG_AGCCTRL1 = 0x1D;
-static const uint8_t REG_AGCCTRL0 = 0x1E;
+static const uint8_t REG_BSCFG = 0x1A;
+static const uint8_t REG_AGCCTRL2 = 0x1B;
+static const uint8_t REG_AGCCTRL1 = 0x1C;
+static const uint8_t REG_AGCCTRL0 = 0x1D;
 static const uint8_t REG_FREND1 = 0x21;
 static const uint8_t REG_FREND0 = 0x22;
 static const uint8_t REG_FSCAL3 = 0x23;

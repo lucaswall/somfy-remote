@@ -182,10 +182,11 @@ static void round_trips_every_built_frame(void) {
 // command it decodes to have changed. docs/somfy-rts.md warns that the obfuscation is a
 // chain and not a mask; this is the consequence.
 //
-// Only two of the seven bytes are protected at all: byte 0 by the 0xA7 comparison, and
-// byte 6 because nothing follows it to cancel against. 40 of 56 flips survive, and the
-// number is asserted exactly so that a future change to the parser cannot quietly make it
-// worse without saying so.
+// Only part of two bytes is protected at all: the *high nibble* of byte 0, by the key test,
+// and byte 6, because nothing follows it to cancel against. Byte 0's low nibble is not
+// protected — a real handheld varies it, so a receiver may not test it. 44 of 56 flips
+// survive, and the number is asserted exactly so that a future change to the parser cannot
+// quietly make it worse without saying so.
 //
 // This is the measured reason a press is only believed once two copies agree byte for
 // byte. A corrupted frame does not look corrupt — it looks like a different remote.
@@ -210,14 +211,19 @@ static void cannot_detect_a_single_bit_flip(void) {
       }
     }
   }
-  TEST_ASSERT_EQUAL_UINT16(40, accepted);
-  // Every one that got through is wrong about something. None of them is harmless.
+  TEST_ASSERT_EQUAL_UINT16(44, accepted);
+  // Forty of the forty-four are wrong about an address, a rolling code or a command. The
+  // other four are flips of byte 0's low nibble — the one field a receiver must ignore
+  // because real remotes vary it — so they decode to exactly the right press. That is the
+  // only harmless corruption this frame format has.
   TEST_ASSERT_EQUAL_UINT16(40, decodedDifferently);
 }
 
-// The two bytes that are protected, pinned separately so the reason each one is safe stays
-// visible: the key comparison for byte 0, and nothing-follows-it for byte 6.
-static void catches_a_flip_in_the_key_or_the_last_byte(void) {
+// What little is protected, pinned separately so the reason each part is safe stays visible:
+// the *high nibble* of byte 0 by the key test, and byte 6 because nothing follows it to
+// cancel against. Byte 0's low nibble is deliberately absent from this list — a real remote
+// varies it, and testing it would reject fifteen presses in sixteen.
+static void catches_a_flip_in_the_key_nibble_or_the_last_byte(void) {
   uint8_t good[SOMFY_FRAME_LEN];
   somfyBuildFrame(SOMFY_DOWN, 0x1234, 0x765432, good);
 
@@ -225,9 +231,11 @@ static void catches_a_flip_in_the_key_or_the_last_byte(void) {
     uint8_t bad[SOMFY_FRAME_LEN];
     SomfyHeard heard;
 
-    memcpy(bad, good, SOMFY_FRAME_LEN);
-    bad[0] ^= (uint8_t)(1u << bit);
-    TEST_ASSERT_FALSE(somfyParseFrame(bad, &heard));
+    if (bit >= 4) {   // the high nibble, the only half of byte 0 a receiver may test
+      memcpy(bad, good, SOMFY_FRAME_LEN);
+      bad[0] ^= (uint8_t)(1u << bit);
+      TEST_ASSERT_FALSE(somfyParseFrame(bad, &heard));
+    }
 
     memcpy(bad, good, SOMFY_FRAME_LEN);
     bad[SOMFY_FRAME_LEN - 1] ^= (uint8_t)(1u << bit);
@@ -235,16 +243,39 @@ static void catches_a_flip_in_the_key_or_the_last_byte(void) {
   }
 }
 
-// Byte 0 is 0xA7 in every implementation in the wild. It is not a checksum and not a
-// secret, but a burst that does not open with it is not an RTS frame, and on a band shared
-// with every doorbell and weather station in the street that is worth one comparison.
-static void rejects_a_frame_that_does_not_open_with_the_key(void) {
-  uint8_t frame[SOMFY_FRAME_LEN];
-  somfyBuildFrame(SOMFY_UP, 0x0001, 0x000002, frame);
-  frame[0] = 0xA6;
-
+// Byte 0's high nibble is 0xA in every implementation in the wild, transmitted and
+// received. It is not a checksum and not a secret, but a burst that does not open with it is
+// not an RTS frame, and on a band shared with every doorbell in the street that is worth one
+// comparison.
+//
+// The low nibble is a different matter and must NOT be tested: real handhelds vary it —
+// captures show one remote sending 0xA1 then 0xA3 on consecutive presses, and ESPSomfy-RTS
+// transmits 0xA0 | (rollingCode & 0x0F). An earlier version of this test used 0xA6 as its
+// counter-example, which is a value a real remote sends.
+static void accepts_any_key_nibble_and_rejects_the_rest(void) {
   SomfyHeard heard;
-  TEST_ASSERT_FALSE(somfyParseFrame(frame, &heard));
+
+  for (uint8_t low = 0; low < 16; low++) {
+    uint8_t frame[SOMFY_FRAME_LEN];
+    somfyBuildFrame(SOMFY_UP, 0x0001, 0x000002, frame);
+    // Rebuilding by hand: changing byte 0 changes the checksum and the whole XOR chain.
+    uint8_t plain[SOMFY_FRAME_LEN] = {(uint8_t)(0xA0 | low), 0x20, 0x00, 0x01, 0x00, 0x00, 0x02};
+    uint8_t checksum = 0;
+    for (uint8_t i = 0; i < SOMFY_FRAME_LEN; i++) {
+      checksum ^= (uint8_t)(plain[i] ^ (plain[i] >> 4));
+    }
+    plain[1] |= (uint8_t)(checksum & 0x0F);
+    for (uint8_t i = 1; i < SOMFY_FRAME_LEN; i++) {
+      plain[i] ^= plain[i - 1];
+    }
+    TEST_ASSERT_TRUE(somfyParseFrame(plain, &heard));
+    TEST_ASSERT_EQUAL_HEX32(0x000002, heard.address);
+  }
+
+  uint8_t wrong[SOMFY_FRAME_LEN];
+  somfyBuildFrame(SOMFY_UP, 0x0001, 0x000002, wrong);
+  wrong[0] = 0xB7;   // wrong high nibble: not an RTS frame
+  TEST_ASSERT_FALSE(somfyParseFrame(wrong, &heard));
 }
 
 // The nine documented commands must all survive, including the five this firmware never
@@ -318,8 +349,8 @@ int main(void) {
   RUN_TEST(parses_a_known_frame);
   RUN_TEST(round_trips_every_built_frame);
   RUN_TEST(cannot_detect_a_single_bit_flip);
-  RUN_TEST(catches_a_flip_in_the_key_or_the_last_byte);
-  RUN_TEST(rejects_a_frame_that_does_not_open_with_the_key);
+  RUN_TEST(catches_a_flip_in_the_key_nibble_or_the_last_byte);
+  RUN_TEST(accepts_any_key_nibble_and_rejects_the_rest);
   RUN_TEST(preserves_every_documented_command_nibble);
   RUN_TEST(random_bytes_pass_at_roughly_the_checksum_rate);
   return UNITY_END();

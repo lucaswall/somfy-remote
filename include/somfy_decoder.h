@@ -54,15 +54,27 @@ class SomfyDecoder {
   }
 
   bool feed(bool high, uint32_t microseconds, SomfyHeard *out) {
-    // The level is recorded, counted and *not* acted on. See the note above emit().
+    // The level is recorded, counted and *not* acted on. See the note above feedData().
+    //
+    // Counted twice, deliberately. The overall figure is dominated by ambient noise and says
+    // nothing about reception; the in-frame figure is the one that would justify restoring
+    // the level as an error check, and on the one real frame captured so far it was zero.
+    // Gathering it costs a branch and settles an argument that otherwise runs on a statistic
+    // measured in the wrong place.
     if (_haveLevel && high == _lastHigh) {
       _levelRepeats++;
+      if (_inData) {
+        _levelRepeatsInFrame++;
+      }
     }
     _haveLevel = true;
     _lastHigh = high;
 
     if (microseconds > SOMFY_GAP_US) {
-      reset();
+      // A gap mid-frame is a frame abandoned, and used to be the one failure that went
+      // uncounted — reset() alone said nothing, so the most ordinary way to lose a burst
+      // was invisible from every diagnostic the firmware has.
+      abandon();
       _haveLevel = true;
       _lastHigh = high;
       return false;
@@ -75,15 +87,23 @@ class SomfyDecoder {
     return false;
   }
 
-  // Frames abandoned part-way. A receiver that decodes nothing looks identical to a quiet
-  // house, and this is the counter that tells them apart.
-  uint16_t aborted() const { return _aborted; }
+  // The two ways a frame can fail, kept apart because they call for opposite fixes. A frame
+  // abandoned part-way means the interval train broke — noise, a lost edge, a gap. A frame
+  // that ran all fifty-six bits and failed its checksum means the timing held and the *bits*
+  // are wrong. Conflating them, as one counter did, makes the more ordinary failure invisible
+  // and the rarer one look like both.
+  //
+  // Both are 32-bit: at the ambient rates this board sees, a 16-bit counter wraps in well
+  // under two minutes, and a diagnostic that silently counts backwards is worse than none.
+  uint32_t abandoned() const { return _abandoned; }
+  uint32_t badChecksum() const { return _badChecksum; }
 
   // How often two consecutive intervals arrived at the same level, which cannot happen if
-  // every edge was seen. It is the sharpest measure available of how much the front end is
+  // every edge was seen. The sharpest measure available of how much the front end is
   // dropping: near zero means a clean line, and a large fraction means the data pin is
-  // chattering faster than anything downstream can follow.
-  uint16_t levelRepeats() const { return _levelRepeats; }
+  // chattering faster than anything downstream can follow. 32-bit for the reason above.
+  uint32_t levelRepeats() const { return _levelRepeats; }
+  uint32_t levelRepeatsInFrame() const { return _levelRepeatsInFrame; }
 
   // True once for each frame that just began, so a diagnostic capture can start where the
   // data does. Without it the sync burst fills most of the buffer and the frame is cut off
@@ -109,7 +129,7 @@ class SomfyDecoder {
  private:
   void abandon() {
     if (_inData) {
-      _aborted++;
+      _abandoned++;
     }
     reset();
   }
@@ -187,7 +207,7 @@ class SomfyDecoder {
 
     const bool valid = somfyParseFrame(_frame, out);
     if (!valid) {
-      _aborted++;
+      _badChecksum++;
       _checksumFailed = true;
     }
     reset();
@@ -195,8 +215,10 @@ class SomfyDecoder {
   }
 
   uint8_t _frame[SOMFY_FRAME_LEN] = {0};
-  uint16_t _aborted = 0;
-  uint16_t _levelRepeats = 0;
+  uint32_t _abandoned = 0;
+  uint32_t _badChecksum = 0;
+  uint32_t _levelRepeats = 0;
+  uint32_t _levelRepeatsInFrame = 0;
   bool _bit = false;
   bool _frameStarted = false;
   bool _checksumFailed = false;
@@ -247,8 +269,14 @@ class SomfyPressAssembler {
       slot = evictOldest(nowMs);
     }
 
+    // The command is part of the comparison, and leaving it out was not harmless. A single
+    // merged edge aligned to the start of byte 1 inverts the command nibble while leaving
+    // the address and the rolling code intact — the checksum nibble moves by the same 0xF
+    // and cancels — so a corrupt copy and a clean copy of one press look like the same
+    // burst, and the press was reported with whichever command arrived first.
     const bool sameBurst = slot->used && slot->address == heard.address &&
                            slot->rollingCode == heard.rollingCode &&
+                           slot->command == heard.command &&
                            (uint32_t)(nowMs - slot->at) <= SOMFY_BURST_MS;
     if (!sameBurst) {
       *slot = {heard.address, heard.rollingCode, heard.command, 1, nowMs, true};

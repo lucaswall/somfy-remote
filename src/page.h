@@ -369,17 +369,33 @@ static const char CONTROLS_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
 <script>
 const $ = id => document.getElementById(id);
 const CMD = {1:'My',2:'Up',3:'My+Up',4:'Down',5:'My+Down',6:'Up+Down',8:'Prog',9:'Sun',10:'Flag'};
-let names = [], newest = true, editing = null;
+let names = [], newest = true;
+
+// The list is rebuilt once a second, and rebuilding it under somebody's fingers wipes the
+// name they are half-way through typing and unticks the boxes they just ticked. So the rows
+// are only replaced when the *set* of rows changes; otherwise the live fields are left alone
+// and just the timestamps are refreshed. The operation page learned this same lesson.
+let unknownKey = '', knownKey = '';
+const focused = () => document.activeElement && document.activeElement.tagName === 'INPUT';
+
+// Every name on this page came from somewhere else — a person typing into the form, or Home
+// Assistant over MQTT — and both land in innerHTML. The device-side filter drops quotes and
+// backslashes but not angle brackets, and the MQTT path applies no filter at all.
+const esc = t => String(t).replace(/[&<>"']/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
 const ago = ms => ms < 2000 ? 'just now'
   : ms < 60000 ? Math.round(ms/1000) + 's ago'
   : ms < 3600000 ? Math.round(ms/60000) + 'm ago' : Math.round(ms/3600000) + 'h ago';
 
-function flip(){ newest = !newest; $('sortbtn').textContent = newest ? 'newest first' : 'first heard first'; draw(last); }
+// `last` and `first` are AGES in milliseconds, not timestamps — so newest-first is
+// *ascending* last, and the walk order is *descending* first. Both were the wrong way round,
+// which put the control somebody was standing in front of at the bottom of the list.
+function flip(){ newest = !newest; $('sortbtn').textContent = newest ? 'newest first' : 'walk order'; draw(last); }
 
 function ticks(addr, drives){
   return names.map((n,i)=>`<label class="tick"><input type="checkbox" data-a="${addr}" value="${i}"
-    ${drives & (1<<i) ? 'checked' : ''}>${n||('Remote '+i)}</label>`).join('');
+    ${drives & (1<<i) ? 'checked' : ''}>${esc(n||('Remote '+i))}</label>`).join('');
 }
 
 // Addresses that differ by one are almost always channels of the same handheld. It is a
@@ -399,12 +415,17 @@ function draw(s){
   $('rx').textContent = `${s.edges}/s edges, ${s.frames} frames, ${s.presses} presses`
     + (s.mutes ? `, ${s.mutes} mutes` : '') + (s.muted ? ' — MUTED, backing off' : '');
 
-  const u = s.heard.slice().sort((a,b)=> newest ? b.last - a.last : a.first - b.first);
+  const u = s.heard.slice().sort((a,b)=> newest ? a.last - b.last : b.first - a.first);
   $('n').textContent = u.length;
   $('empty').style.display = u.length ? 'none' : '';
-  $('unknown').innerHTML = u.map(c=>`
+
+  // Ages change every second; the set of addresses does not. Only the second is a reason to
+  // throw away what somebody is typing.
+  const uk = u.map(c=>c.a).join(',') + '|' + newest;
+  for (const c of u) { const e = $('ago'+c.a); if (e) e.textContent = ago(c.last); }
+  if (uk !== unknownKey && !focused()) { unknownKey = uk; $('unknown').innerHTML = u.map(c=>`
     <div class="card">
-      <div class="hdr"><b>${ago(c.last)}</b><span class="badge">${CMD[c.cmd]||('0x'+c.cmd.toString(16))}</span></div>
+      <div class="hdr"><b id="ago${c.a}">${ago(c.last)}</b><span class="badge">${CMD[c.cmd]||('0x'+c.cmd.toString(16))}</span></div>
       <div class="meta">${c.n} press${c.n===1?'':'es'} &middot; code ${c.code}</div>
       ${neighbour(u,c)}
       <div class="row" style="margin-top:8px">
@@ -415,21 +436,22 @@ function draw(s){
       <div class="row" style="margin-top:8px">
         <button class="danger" onclick="drop(${c.a})">Ignore</button>
       </div>
-    </div>`).join('');
+    </div>`).join(''); }
 
   $('kn').textContent = s.known.length;
-  $('known').innerHTML = s.known.map(c=>`
+  const kk = s.known.map(c=>c.a+':'+c.name+':'+c.d).join(',');
+  if (kk !== knownKey && !focused()) { knownKey = kk; $('known').innerHTML = s.known.map(c=>`
     <div class="card">
-      <div class="hdr"><b>${c.name}</b></div>
+      <div class="hdr"><b>${esc(c.name)}</b></div>
       <div class="row" style="margin-top:8px">
-        <input id="nm${c.a}" value="${c.name}">
+        <input id="nm${c.a}" value="${esc(c.name)}">
         <button style="flex:0 0 74px" onclick="save(${c.a})">Save</button>
       </div>
       <div class="ticks">${ticks(c.a,c.d)}</div>
       <div class="row" style="margin-top:8px">
         <button class="danger" onclick="forget(${c.a})">Forget</button>
       </div>
-    </div>`).join('');
+    </div>`).join(''); }
 }
 
 async function arm(m){

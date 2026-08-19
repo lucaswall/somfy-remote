@@ -110,12 +110,13 @@ class Receiver {
     uint32_t overflows;
     uint32_t frames;
     uint32_t presses;
-    uint32_t aborted;
+    uint32_t abandoned;    // the interval train broke: noise, a lost edge, a gap
+    uint32_t badChecksum;  // the timing held and the bits were wrong
     uint16_t mutes;
     uint16_t ownAddress;    // frames carrying one of our own addresses: impossible, so a fault
     uint16_t pressesDropped;
     uint16_t peakRate;       // busiest 10 ms window ever seen, in edges
-    uint16_t levelRepeats;   // how badly the front end is dropping edges
+    uint32_t levelRepeats;   // how badly the front end is dropping edges
     bool muted;
   };
   Stats stats() const;

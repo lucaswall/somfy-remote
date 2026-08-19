@@ -12,6 +12,32 @@
 #include "control_map.h"
 #include "somfy_frame.h"
 
+// Names arrive from Home Assistant over MQTT and from the control form, and three places
+// splice them into JSON built with snprintf rather than a serialiser. One double quote in a
+// cover's friendly name makes /api/state unparseable, and the operation page's poll() only
+// marks itself stale — so the page shows no shutters, no buttons and no message, for ever,
+// with /status still working and nothing pointing at the cause.
+//
+// Escaping at the emitter rather than filtering at each door: there are three doors, one of
+// them (the MQTT names topic) is not ours to filter, and a name is display text that has
+// every right to contain a quote.
+static void appendJsonString(char *out, size_t cap, const char *in) {
+  size_t at = strlen(out);
+  for (; *in != '\0' && at + 7 < cap; in++) {
+    const unsigned char c = (unsigned char)*in;
+    if (c == '"' || c == '\\') {
+      out[at++] = '\\';
+      out[at++] = (char)c;
+    } else if (c < 0x20) {
+      at += (size_t)snprintf(out + at, cap - at, "\\u%04x", c);
+      continue;
+    } else {
+      out[at++] = (char)c;
+    }
+  }
+  out[at] = '\0';
+}
+
 void WebUi::loop() {
   if (!_started) {
     if (WiFi.status() == WL_CONNECTED) {
@@ -50,6 +76,10 @@ void WebUi::start() {
   _server.on("/api/control/ignore", HTTP_POST, [this]() { handleControlIgnore(); });
   _server.on("/api/capture", HTTP_GET, [this]() { handleCapture(); });
   _server.onNotFound([this]() { _server.send(404, "text/plain", "not found"); });
+
+  // Needed before any handler can read it; the server discards headers it was not told to
+  // keep. This is the whole of the CSRF defence — see sameOrigin().
+  _server.collectHeaders("Origin");
   _server.begin();
 
   // ArduinoOTA already started mDNS under the same hostname; advertising the web service
@@ -59,6 +89,32 @@ void WebUi::start() {
   _started = true;
   logLine("web       : http://%s.local/  (http://%s/)", _hostname,
           WiFi.localIP().toString().c_str());
+}
+
+// A POST that changes something must not be triggerable by a page the browser happens to
+// have open. `/api/send` is deliberately unauthenticated — it does what Home Assistant
+// already does — but "anyone in the house" and "any website anyone in the house visits" are
+// very different sets, and a cross-origin auto-submitting form or a no-cors fetch reaches
+// neither a preflight nor a password.
+//
+// An absent Origin is allowed: curl, the status page's own fetches on older browsers, and
+// anything scripted from a terminal have no reason to carry one, and this is a debug surface
+// on a LAN. A *present* one has to match the host the request arrived at — compared against
+// the Host header rather than a hard-coded name, because the UI is reached both by IP and as
+// <hostname>.local.
+bool WebUi::sameOrigin() {
+  if (!_server.hasHeader("Origin")) {
+    return true;
+  }
+  const String origin = _server.header("Origin");
+  const int slashes = origin.indexOf("//");
+  const String authority = slashes < 0 ? origin : origin.substring(slashes + 2);
+  if (authority == _server.hostHeader()) {
+    return true;
+  }
+  _server.send(403, "text/plain", "cross-origin request refused\n");
+  logError("web       : cross-origin POST refused");
+  return false;
 }
 
 // The gate on the settings page and everything it can do. Basic auth, so the browser puts
@@ -111,11 +167,13 @@ void WebUi::handleHeard() {
 
   snprintf(chunk, sizeof(chunk),
            "{\"armed\":%s,\"left\":%lu,\"edges\":%lu,\"frames\":%lu,\"presses\":%lu,"
-           "\"mutes\":%u,\"muted\":%s,\"overflows\":%lu,\"aborted\":%lu,\"heard\":[",
+           "\"mutes\":%u,\"muted\":%s,\"overflows\":%lu,\"abandoned\":%lu,"
+           "\"badsum\":%lu,\"heard\":[",
            _receiver.armed() ? "true" : "false", (unsigned long)_receiver.secondsLeft(),
            (unsigned long)_receiver.edgesPerSecond(), (unsigned long)rx.frames,
            (unsigned long)rx.presses, rx.mutes, rx.muted ? "true" : "false",
-           (unsigned long)rx.overflows, (unsigned long)rx.aborted);
+           (unsigned long)rx.overflows, (unsigned long)rx.abandoned,
+           (unsigned long)rx.badChecksum);
   _server.sendContent(chunk);
 
   const ctl::ControlMap &controls = _mqtt.controls();
@@ -137,9 +195,11 @@ void WebUi::handleHeard() {
   _server.sendContent("],\"known\":[");
   for (uint8_t i = 0; i < controls.count(); i++) {
     const ctl::Control &control = controls.at(i);
-    snprintf(chunk, sizeof(chunk), "%s{\"a\":%lu,\"name\":\"%s\",\"d\":%lu}",
-             i == 0 ? "" : ",", (unsigned long)control.address, control.name,
-             (unsigned long)control.drives);
+    snprintf(chunk, sizeof(chunk), "%s{\"a\":%lu,\"name\":\"", i == 0 ? "" : ",",
+             (unsigned long)control.address);
+    appendJsonString(chunk, sizeof(chunk), control.name);
+    _server.sendContent(chunk);
+    snprintf(chunk, sizeof(chunk), "\",\"d\":%lu}", (unsigned long)control.drives);
     _server.sendContent(chunk);
   }
 
@@ -147,8 +207,10 @@ void WebUi::handleHeard() {
   // Assistant publishes them; this is display only, exactly as everywhere else.
   _server.sendContent("],\"names\":[");
   for (uint8_t i = 0; i < _remotes.count(); i++) {
-    snprintf(chunk, sizeof(chunk), "%s\"%s\"", i == 0 ? "" : ",", _mqtt.nameOf(i));
+    snprintf(chunk, sizeof(chunk), "%s\"", i == 0 ? "" : ",");
+    appendJsonString(chunk, sizeof(chunk), _mqtt.nameOf(i));
     _server.sendContent(chunk);
+    _server.sendContent("\"");
   }
   _server.sendContent("]}");
   _server.sendContent("");
@@ -157,7 +219,7 @@ void WebUi::handleHeard() {
 // Zero minutes stops. Anything else starts or extends the window — extending rather than
 // restarting, so pressing the button twice mid-walk cannot drop a frame.
 void WebUi::handleArm() {
-  if (!settingsAuthorised()) {
+  if (!sameOrigin() || !settingsAuthorised()) {
     return;
   }
   const long minutes = _server.arg("minutes").toInt();
@@ -178,7 +240,7 @@ void WebUi::handleArm() {
 }
 
 void WebUi::handleControlSave() {
-  if (!settingsAuthorised()) {
+  if (!sameOrigin() || !settingsAuthorised()) {
     return;
   }
   if (!_server.hasArg("address") || !_server.hasArg("name")) {
@@ -216,8 +278,14 @@ void WebUi::handleControlSave() {
   while (at < (int)drives.length()) {
     const int comma = drives.indexOf(',', at);
     const int end = comma < 0 ? drives.length() : comma;
-    const long index = drives.substring(at, end).toInt();
-    if (index >= 0 && index < rs::MAX_REMOTES) {
+    // strtol with an end pointer, not toInt(): toInt() reads anything non-numeric as 0, so
+    // one stray separator would make the control claim it drives remote 0 — retained,
+    // surviving reboots and replacement boards, rewriting the first cover's state on every
+    // press of that handheld. handleSend() refuses toInt() fifty lines down for this reason.
+    const String piece = drives.substring(at, end);
+    char *stop = nullptr;
+    const long index = strtol(piece.c_str(), &stop, 10);
+    if (stop != piece.c_str() && *stop == '\0' && index >= 0 && index < rs::MAX_REMOTES) {
       control.drives |= (uint32_t)1u << index;
     }
     at = end + 1;
@@ -234,7 +302,7 @@ void WebUi::handleControlSave() {
 }
 
 void WebUi::handleControlForget() {
-  if (!settingsAuthorised()) {
+  if (!sameOrigin() || !settingsAuthorised()) {
     return;
   }
   const uint32_t address =
@@ -250,7 +318,7 @@ void WebUi::handleControlForget() {
 // survived the checksum. It comes back if it is heard again, which is the right behaviour:
 // this is a work list, not a block list.
 void WebUi::handleControlIgnore() {
-  if (!settingsAuthorised()) {
+  if (!sameOrigin() || !settingsAuthorised()) {
     return;
   }
   _receiver.forgetSighting(
@@ -282,7 +350,14 @@ void WebUi::handleCapture() {
     _server.sendContent(line);
   }
   _server.sendContent("");
-  _receiver.rearmCapture();   // read once, then start again on the next failure
+
+  // Re-arming is opt-in, and it has to be. A frozen capture is often the only artefact of a
+  // failure somebody had to press a remote to produce, and a reload, a back button, a second
+  // reader or a link prefetch would otherwise wipe it with no way back but asking them to do
+  // it again.
+  if (_server.hasArg("rearm")) {
+    _receiver.rearmCapture();
+  }
 }
 
 // Streamed rather than assembled: the remote list grows with the installation, and the
@@ -331,6 +406,11 @@ void WebUi::handleState() {
 // house do. Prog is deliberately not reachable here — it lives behind the settings
 // password, because it changes a pairing rather than a position.
 void WebUi::handleSend() {
+  // The one mutating endpoint with no password, so the only thing standing between a
+  // shutter and a page somebody in the house happened to open.
+  if (!sameOrigin()) {
+    return;
+  }
   const String number = _server.arg("remote");
   const String button = _server.arg("command");
 
@@ -380,7 +460,7 @@ void WebUi::handleSend() {
 // a removed remote comes back — it keeps its index and its rolling code, so it resumes
 // where it left off rather than restarting a counter a motor has already seen.
 void WebUi::handleRemoteFlags() {
-  if (!settingsAuthorised()) {
+  if (!sameOrigin() || !settingsAuthorised()) {
     return;
   }
   const String number = _server.arg("remote");
@@ -432,7 +512,7 @@ void WebUi::handleRemoteFlags() {
 // remote — the one press here that changes something permanent rather than something that
 // can be pressed back.
 void WebUi::handleProg() {
-  if (!settingsAuthorised()) {
+  if (!sameOrigin() || !settingsAuthorised()) {
     return;
   }
   const String number = _server.arg("remote");
@@ -457,7 +537,7 @@ void WebUi::handleProg() {
 // an existing Home Assistant entity and an existing rolling code at different hardware —
 // the counter belongs to the pair (index, address), and reusing one breaks that binding.
 void WebUi::handleRemoteAdd() {
-  if (!settingsAuthorised()) {
+  if (!sameOrigin() || !settingsAuthorised()) {
     return;
   }
   cfg::ConfigDoc next = _mqtt.config();
@@ -495,7 +575,7 @@ void WebUi::handleRemoteAdd() {
 // re-key every Home Assistant entity above it, and deleting the rolling code would restart
 // the counter at zero if the same shutter were ever added back.
 void WebUi::handleRemoteRemove() {
-  if (!settingsAuthorised()) {
+  if (!sameOrigin() || !settingsAuthorised()) {
     return;
   }
   const String number = _server.arg("remote");
@@ -611,12 +691,12 @@ void WebUi::handleStatus() {
            (unsigned long)rx.presses, _mqtt.controls().count());
   _server.sendContent(line);
   snprintf(line, sizeof(line),
-           "        : %lus left, %lu int, %lu ring, %lu overflow, %lu aborted, %u mutes, "
-           "peak %u/10ms, %u level repeats%s\n",
+           "        : %lus left, %lu int, %lu ring, %lu overflow, %lu abandoned, "
+           "%lu bad checksum, %u mutes, peak %u/10ms, %lu level repeats%s\n",
            (unsigned long)_receiver.secondsLeft(), (unsigned long)rx.interrupts,
            (unsigned long)rx.ringWrites, (unsigned long)rx.overflows,
-           (unsigned long)rx.aborted, rx.mutes, (unsigned)rx.peakRate,
-           (unsigned)rx.levelRepeats,
+           (unsigned long)rx.abandoned, (unsigned long)rx.badChecksum, rx.mutes,
+           (unsigned)rx.peakRate, (unsigned long)rx.levelRepeats,
            rx.ownAddress > 0    ? "  OWN ADDRESS HEARD"
            : rx.pressesDropped > 0 ? "  PRESSES DROPPED"
                                    : "");
