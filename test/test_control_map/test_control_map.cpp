@@ -58,14 +58,35 @@ static void drops_only_indices_beyond_the_static_bound(void) {
   TEST_ASSERT_EQUAL_HEX32((1u << 0) | (1u << 29), c.drives);
 }
 
-// A name long enough to overrun the field must be truncated rather than refused: the
-// address is the thing that matters and losing it over a label would be absurd.
-static void truncates_an_over_long_name(void) {
+// Refused, not truncated. Cutting silently once turned three different controls into three
+// identical names, which is worse than refusing the save: the map still looks correct and
+// nothing downstream can tell the three apart.
+static void refuses_an_over_long_name(void) {
   ctl::Control c;
-  const char json[] =
-      "{\"n\":\"a name far longer than the field can possibly hold\",\"d\":[1]}";
+  char json[160];
+  char name[ctl::NAME_LEN + 8];
+  memset(name, 'W', sizeof(name) - 1);
+  name[sizeof(name) - 1] = '\0';
+  snprintf(json, sizeof(json), "{\"n\":\"%s\",\"d\":[1]}", name);
+  TEST_ASSERT_FALSE(ctl::parse(json, strlen(json), 0x000003, &c));
+}
+
+// The longest name that does fit must still be accepted, or the limit is off by one.
+static void accepts_a_name_of_exactly_the_limit(void) {
+  ctl::Control c;
+  char json[160];
+  char name[ctl::NAME_LEN];
+  memset(name, 'W', sizeof(name) - 1);
+  name[sizeof(name) - 1] = '\0';
+  snprintf(json, sizeof(json), "{\"n\":\"%s\",\"d\":[1]}", name);
   TEST_ASSERT_TRUE(ctl::parse(json, strlen(json), 0x000003, &c));
   TEST_ASSERT_EQUAL_size_t(ctl::NAME_LEN - 1, strlen(c.name));
+}
+
+// Long enough for the names a real house needs. 24 was not: three controls in a row cut to
+// the same 23 characters and became indistinguishable.
+static void the_limit_is_long_enough_to_be_useful(void) {
+  TEST_ASSERT_GREATER_OR_EQUAL_UINT8(40, ctl::NAME_LEN);
 }
 
 static void refuses_a_payload_that_is_not_json(void) {
@@ -177,7 +198,9 @@ int main(void) {
   RUN_TEST(parses_a_control_that_drives_several);
   RUN_TEST(parses_a_control_that_drives_nothing);
   RUN_TEST(drops_only_indices_beyond_the_static_bound);
-  RUN_TEST(truncates_an_over_long_name);
+  RUN_TEST(refuses_an_over_long_name);
+  RUN_TEST(accepts_a_name_of_exactly_the_limit);
+  RUN_TEST(the_limit_is_long_enough_to_be_useful);
   RUN_TEST(refuses_a_payload_that_is_not_json);
   RUN_TEST(refuses_an_empty_payload);
   RUN_TEST(round_trips_through_serialise);

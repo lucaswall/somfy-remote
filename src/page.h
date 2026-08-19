@@ -65,6 +65,22 @@ footer{color:var(--dim);font-size:12px;text-align:center;margin-top:18px}
 footer a{color:var(--accent);text-decoration:none}
 .stale{opacity:.45}
 .warn{color:var(--warn);font-size:13px;margin:0 0 10px}
+h2.sect{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);
+margin:18px 0 8px;display:flex;align-items:center;gap:8px}
+.list{display:flex;flex-direction:column;gap:6px}
+.item{background:var(--card);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.item.open{border-color:var(--accent)}
+.line{display:flex;align-items:center;gap:8px;padding:10px 12px;cursor:pointer;font-size:14px}
+.line b{flex:0 0 auto}
+.line .grow{flex:1;color:var(--dim);font-size:12px;overflow:hidden;text-overflow:ellipsis;
+white-space:nowrap}
+.line .age{flex:0 0 auto;color:var(--dim);font-size:12px;
+font-family:ui-monospace,Menlo,Consolas,monospace}
+.kin{color:var(--warn)}
+.edit{padding:0 12px 12px;border-top:1px solid var(--line)}
+.edit input[type=text],.edit input:not([type]){width:100%;margin-top:10px}
+button.link{background:none;border:none;color:var(--accent);font-size:12px;padding:0;
+cursor:pointer;flex:0 0 auto;width:auto}
 .ticks{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
 .tick{display:flex;align-items:center;gap:5px;padding:5px 9px;border:1px solid var(--line);
 border-radius:8px;font-size:13px;color:var(--dim)}
@@ -211,7 +227,7 @@ static const char SETTINGS_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
   <p class="warn">Added remotes start <b>not operational</b>, so nothing can transmit for
   one until it has been paired and switched on deliberately.</p>
   <div class="row">
-    <input id="addr" placeholder="address, optional (e.g. 0x000000)">
+    <input id="addr" maxlength="8" placeholder="address, optional (e.g. 0x000000)">
     <button style="flex:0 0 92px" onclick="addRemote()">Add</button>
   </div>
 </div>
@@ -331,27 +347,21 @@ static const char CONTROLS_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
 
 <div class="card">
   <div class="hdr"><b>Listening</b><span class="badge" id="state">&mdash;</span></div>
-  <p class="meta" id="rx"></p>
-  <div class="row" style="margin-top:10px">
+  <div class="row" style="margin-top:8px">
     <button onclick="arm(15)">15 min</button>
     <button onclick="arm(60)">60 min</button>
     <button class="danger" onclick="arm(0)">Stop</button>
   </div>
-  <p class="meta">The window is extended by every press heard, so a walk with the phone in
-  a pocket does not run out.</p>
+  <p class="meta" id="rx"></p>
 </div>
 
-<div class="card">
-  <div class="hdr"><b>Heard, not named yet</b><span class="badge" id="n">0</span></div>
-  <p class="meta" id="empty">Nothing yet. Start listening, then press a control.</p>
-  <div class="row" style="margin-top:6px">
-    <button id="sortbtn" onclick="flip()">newest first</button>
-  </div>
-</div>
-<div id="unknown"></div>
+<h2 class="sect">Heard <span class="badge" id="n">0</span>
+  <button class="link" id="sortbtn" onclick="flip()">newest first</button></h2>
+<p class="meta" id="empty">Nothing yet. Start listening, then press a control.</p>
+<div id="unknown" class="list"></div>
 
-<div class="card"><div class="hdr"><b>Named</b><span class="badge" id="kn">0</span></div></div>
-<div id="known"></div>
+<h2 class="sect">Named <span class="badge" id="kn">0</span></h2>
+<div id="known" class="list"></div>
 
 <footer><a href="/settings">settings</a> &middot; <a href="/status">status</a> &middot;
 <a href="/errors">faults</a></footer>
@@ -359,87 +369,93 @@ static const char CONTROLS_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
 <script>
 const $ = id => document.getElementById(id);
 const CMD = {1:'My',2:'Up',3:'My+Up',4:'Down',5:'My+Down',6:'Up+Down',8:'Prog',9:'Sun',10:'Flag'};
-let names = [], newest = true;
+const NAME_MAX = 39;
 
-// Rebuilding once a second under somebody's fingers wipes the name they are typing, so rows
-// are replaced only when the *set* of them changes.
-let unknownKey = '', knownKey = '';
-const focused = () => document.activeElement && document.activeElement.tagName === 'INPUT';
+let names = [], newest = true, open = null, last = null, sig = '';
 
-// Every name here came from a form or from MQTT and lands in innerHTML; the device-side
-// filter drops quotes but not angle brackets, and the MQTT path filters nothing.
 const esc = t => String(t).replace(/[&<>"']/g, c =>
   ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
 const ago = ms => ms < 2000 ? 'just now'
-  : ms < 60000 ? Math.round(ms/1000) + 's ago'
-  : ms < 3600000 ? Math.round(ms/60000) + 'm ago' : Math.round(ms/3600000) + 'h ago';
+  : ms < 60000 ? Math.round(ms/1000) + 's'
+  : ms < 3600000 ? Math.round(ms/60000) + 'm' : Math.round(ms/3600000) + 'h';
 
-// `last` and `first` are AGES, not timestamps: newest-first is *ascending* last.
-function flip(){ newest = !newest; $('sortbtn').textContent = newest ? 'newest first' : 'walk order'; draw(last); }
+const hex = a => a.toString(16).padStart(6,'0');
+const drivesText = d => {
+  const n = names.map((x,i)=> (d>>i & 1) ? (x || ('Remote '+i)) : null).filter(Boolean);
+  return n.length ? n.join(', ') : 'nothing yet';
+};
 
-function ticks(addr, drives){
-  return names.map((n,i)=>`<label class="tick"><input type="checkbox" data-a="${addr}" value="${i}"
-    ${drives & (1<<i) ? 'checked' : ''}>${esc(n||('Remote '+i))}</label>`).join('');
+// Channels of one handheld share most of the address and differ in a single byte — which
+// byte varies by remote, so compare all three rather than assuming the low one.
+const sameRemote = (a,b) => {
+  const x = a ^ b;
+  return x !== 0 && ((x & 0xffff00) === 0 || (x & 0xff00ff) === 0 || (x & 0x00ffff) === 0);
+};
+
+function editor(a, name, d){
+  return `<div class="edit">
+    <input id="nm${a}" maxlength="${NAME_MAX}" placeholder="name this control"
+           value="${esc(name)}" oninput="counter(${a})">
+    <div class="meta"><span id="cc${a}"></span></div>
+    <div class="ticks">${names.map((n,i)=>`<label class="tick"><input type="checkbox"
+      data-a="${a}" value="${i}" ${d>>i & 1 ? 'checked' : ''}>${esc(n||('Remote '+i))}</label>`).join('')}</div>
+    <div class="row" style="margin-top:10px">
+      <button onclick="save(${a})">Save</button>
+      <button class="danger" onclick="${d===null?'drop':'forget'}(${a})">${d===null?'Ignore':'Forget'}</button>
+      <button class="link" onclick="open=null;draw(last)">Cancel</button>
+    </div></div>`;
 }
 
-// Adjacent addresses are usually channels of one handheld. A hint only: which shutter a
-// channel drives has no relation to its number.
-function neighbour(list, c){
-  return list.some(o => o.a !== c.a && Math.abs(o.a - c.a) <= 2)
-    ? '<p class="meta">looks like a channel of the same remote as its neighbour</p>' : '';
+function counter(a){
+  const el = $('nm'+a); if (!el) return;
+  $('cc'+a).textContent = `${el.value.length}/${NAME_MAX}`;
 }
 
-let last = null;
 function draw(s){
   if (!s) return;
   last = s;
-  $('state').textContent = s.armed ? s.left + 's left' : 'off';
+  $('state').textContent = s.armed ? ago(s.left*1000) + ' left' : 'off';
   $('state').className = 'badge ' + (s.armed ? 'ok' : '');
-  $('rx').textContent = `${s.edges}/s edges, ${s.frames} frames, ${s.presses} presses`
-    + (s.mutes ? `, ${s.mutes} mutes` : '') + (s.muted ? ' — MUTED, backing off' : '');
+  $('rx').textContent = `${s.edges}/s · ${s.frames} frames · ${s.presses} presses`
+    + (s.abandoned || s.badsum ? ` · ${s.abandoned} abandoned, ${s.badsum} bad sum` : '')
+    + (s.muted ? ' · MUTED' : '');
 
   const u = s.heard.slice().sort((a,b)=> newest ? a.last - b.last : b.first - a.first);
   $('n').textContent = u.length;
   $('empty').style.display = u.length ? 'none' : '';
 
-  const uk = u.map(c=>c.a).join(',') + '|' + newest;
-  for (const c of u) { const e = $('ago'+c.a); if (e) e.textContent = ago(c.last); }
-  if (uk !== unknownKey && !focused()) { unknownKey = uk; $('unknown').innerHTML = u.map(c=>`
-    <div class="card">
-      <div class="hdr"><b id="ago${c.a}">${ago(c.last)}</b><span class="badge">${CMD[c.cmd]||('0x'+c.cmd.toString(16))}</span></div>
-      <div class="meta">${c.n} press${c.n===1?'':'es'} &middot; code ${c.code}</div>
-      ${neighbour(u,c)}
-      <div class="row" style="margin-top:8px">
-        <input id="nm${c.a}" placeholder="name this control" value="">
-        <button style="flex:0 0 74px" onclick="save(${c.a})">Save</button>
-      </div>
-      <div class="ticks">${ticks(c.a,0)}</div>
-      <div class="row" style="margin-top:8px">
-        <button class="danger" onclick="drop(${c.a})">Ignore</button>
-      </div>
-    </div>`).join(''); }
+  // Only the open row carries inputs, so a redraw cannot wipe what is being typed anywhere
+  // else — and the signature check below stops the redraw entirely while one is open.
+  const next = JSON.stringify([u.map(c=>[c.a,c.n]), s.known.map(c=>[c.a,c.name,c.d]), open]);
+  if (next === sig) { for (const c of u) { const e=$('ag'+c.a); if(e) e.textContent=ago(c.last); } return; }
+  sig = next;
+
+  $('unknown').innerHTML = u.map(c=>{
+    const kin = u.some(o=>sameRemote(o.a,c.a)) ? '<span class="kin">same remote</span>' : '';
+    return `<div class="item${open===c.a?' open':''}">
+      <div class="line" onclick="pick(${c.a})">
+        <b>${CMD[c.cmd]||('0x'+c.cmd.toString(16))}</b>
+        <span class="grow">${c.n}&times; · ${hex(c.a)} ${kin}</span>
+        <span class="age" id="ag${c.a}">${ago(c.last)}</span>
+      </div>${open===c.a ? editor(c.a,'',null) : ''}</div>`;
+  }).join('');
 
   $('kn').textContent = s.known.length;
-  const kk = s.known.map(c=>c.a+':'+c.name+':'+c.d).join(',');
-  if (kk !== knownKey && !focused()) { knownKey = kk; $('known').innerHTML = s.known.map(c=>`
-    <div class="card">
-      <div class="hdr"><b>${esc(c.name)}</b></div>
-      <div class="row" style="margin-top:8px">
-        <input id="nm${c.a}" value="${esc(c.name)}">
-        <button style="flex:0 0 74px" onclick="save(${c.a})">Save</button>
-      </div>
-      <div class="ticks">${ticks(c.a,c.d)}</div>
-      <div class="row" style="margin-top:8px">
-        <button class="danger" onclick="forget(${c.a})">Forget</button>
-      </div>
-    </div>`).join(''); }
+  $('known').innerHTML = s.known.map(c=>`
+    <div class="item${open===c.a?' open':''}">
+      <div class="line" onclick="pick(${c.a})">
+        <b>${esc(c.name)}</b>
+        <span class="grow">${esc(drivesText(c.d))}</span>
+      </div>${open===c.a ? editor(c.a,c.name,c.d) : ''}</div>`).join('');
+
+  if (open !== null) counter(open);
 }
 
-async function arm(m){
-  await fetch('/api/receiver/arm?minutes=' + m, {method:'POST'});
-  poll();
-}
+function pick(a){ open = (open === a) ? null : a; sig = ''; draw(last); }
+function flip(){ newest = !newest; $('sortbtn').textContent = newest ? 'newest first' : 'walk order'; sig=''; draw(last); }
+
+async function arm(m){ await fetch('/api/receiver/arm?minutes='+m,{method:'POST'}); poll(); }
 
 async function save(a){
   const name = $('nm'+a).value.trim();
@@ -447,28 +463,24 @@ async function save(a){
   const d = [...document.querySelectorAll(`input[data-a="${a}"]:checked`)].map(e=>e.value).join(',');
   const r = await fetch(`/api/control/save?address=${a}&name=${encodeURIComponent(name)}&drives=${d}`,
                         {method:'POST'});
-  if (!r.ok) alert('NOT saved: ' + (await r.text()));
-  poll();
+  if (!r.ok) { alert('NOT saved: ' + (await r.text())); return; }
+  open = null; sig = ''; poll();
 }
 
 async function forget(a){
   if (!confirm('Forget this control?')) return;
-  const r = await fetch('/api/control/forget?address=' + a, {method:'POST'});
+  const r = await fetch('/api/control/forget?address='+a,{method:'POST'});
   if (!r.ok) alert('NOT forgotten: ' + (await r.text()));
-  poll();
+  open = null; sig = ''; poll();
 }
 
 async function drop(a){
-  await fetch('/api/control/ignore?address=' + a, {method:'POST'});
-  poll();
+  await fetch('/api/control/ignore?address='+a,{method:'POST'});
+  open = null; sig = ''; poll();
 }
 
 async function poll(){
-  try {
-    const s = await (await fetch('/api/heard')).json();
-    names = s.names;
-    draw(s);
-  } catch (e) {}
+  try { const s = await (await fetch('/api/heard')).json(); names = s.names; draw(s); } catch (e) {}
 }
 poll();
 setInterval(poll, 1000);

@@ -21,13 +21,15 @@
 
 namespace ctl {
 
-static const uint8_t NAME_LEN = 24;
+// Long enough for "Gallery handheld — all three" without cutting. 24 was not: three controls
+// in a row truncated to the same 23 characters and became indistinguishable from each other.
+static const uint8_t NAME_LEN = 40;
 
 // A dozen wall buttons plus two or three multi-channel handhelds. 1 KB total.
 static const uint8_t MAX_CONTROLS = 32;
 
 // The longest name, every index set, and the JSON around them.
-static const size_t PAYLOAD_LEN = 192;
+static const size_t PAYLOAD_LEN = 224;
 
 struct Control {
   uint32_t address;
@@ -54,9 +56,14 @@ inline bool parse(const char *json, size_t len, uint32_t address, Control *out) 
     return false;
   }
 
+  const char *name = doc["n"].as<const char *>();
+  if (strlen(name) >= NAME_LEN) {
+    return false;   // refused, not cut: a truncated name still looks like a name
+  }
+
   Control parsed = {};
   parsed.address = address;
-  strncpy(parsed.name, doc["n"].as<const char *>(), NAME_LEN - 1);
+  strncpy(parsed.name, name, NAME_LEN - 1);
 
   for (JsonVariantConst index : doc["d"].as<JsonArrayConst>()) {
     const unsigned value = index | 0xFFFFu;

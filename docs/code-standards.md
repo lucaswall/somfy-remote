@@ -40,6 +40,45 @@ than justify.
   nothing includes, `make` targets nothing runs, obsolete instructions in docs. A future
   agent cannot tell a deliberate leftover from an oversight, and will preserve both.
 
+## The web UI is load-bearing
+
+`/`, `/settings` and `/controls` are not debug output. They are opened standing in front of
+a shutter, one-handed, on a phone, sometimes to decide whether the bridge or the motor is the
+problem — and `/controls` is the only way the learned map is ever built. Treat their design
+with the same seriousness as the send path.
+
+**Constraints belong at the input.** A field must not accept what the device will refuse.
+`maxlength` on every text input, `min`/`max` on every number, and the limit visible *before*
+it is reached — a counter, not an error afterwards. A server-side check is the backstop, never
+the only guard.
+
+**Never silently alter what somebody typed.** Truncating a name to fit is worse than refusing
+it: the result still looks like a name, so nobody notices. Three controls were once cut to the
+same 23 characters and became indistinguishable. Refuse, say why, and say what the limit is.
+
+**Never redraw over an edit in progress.** A polled page must leave alone any field being
+typed into and any control being changed. Replace rows when the *set* of rows changes, not on
+every tick.
+
+**Design for the list being long.** Every screen here grows: twelve remotes, thirty-odd
+controls. One compact line per item, detail on demand, and never a form per row rendered all
+at once. If a page is unusable at the size the installation will actually reach, it does not
+work.
+
+**Order by what the person is doing.** During a naming walk the control just pressed is the
+one that matters, so it sorts first. Check the sort direction against real data — ages and
+timestamps sort opposite ways, and getting it backwards puts the wanted row last.
+
+**Confirm the irreversible, and nothing else.** Prog and Forget ask. Up, Down and Stop do not.
+A confirmation on a reversible action is noise that trains people to click through the ones
+that matter.
+
+**Say what to do, not what failed.** "The broker did not accept it — nothing was saved" beats
+a status code. If an action did not take effect, the page must not look as though it did.
+
+**Escape everything that came from somewhere else.** Names arrive from Home Assistant and from
+the form; both reach `innerHTML` and hand-built JSON. Escape at the emitter.
+
 ## Testing
 
 Logic that does not touch hardware is tested on the desktop, where a failure costs a

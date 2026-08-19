@@ -238,16 +238,30 @@ void WebUi::handleControlSave() {
 
   const String requested = _server.arg("name");
   uint8_t kept = 0;
-  for (uint16_t i = 0; i < requested.length() && kept < ctl::NAME_LEN - 1; i++) {
+  bool overflowed = false;
+  for (uint16_t i = 0; i < requested.length(); i++) {
     const char c = requested[i];
     if (c == '"' || c == '\\' || (uint8_t)c < 0x20) {
       continue;
+    }
+    if (kept >= ctl::NAME_LEN - 1) {
+      overflowed = true;
+      break;
     }
     control.name[kept++] = c;
   }
   control.name[kept] = '\0';
   if (kept == 0) {
     _server.send(400, "text/plain", "a name is required\n");
+    return;
+  }
+  // Refused rather than cut. Silent truncation once turned three different controls into
+  // three identical names, which is worse than losing the save: the map still looks right.
+  if (overflowed) {
+    char message[64];
+    snprintf(message, sizeof(message), "name is longer than %u characters\n",
+             (unsigned)(ctl::NAME_LEN - 1));
+    _server.send(400, "text/plain", message);
     return;
   }
 
