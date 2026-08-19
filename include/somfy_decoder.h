@@ -39,13 +39,9 @@ class SomfyDecoder {
   }
 
   bool feed(bool high, uint32_t microseconds, SomfyHeard *out) {
-    // Counted, never acted on — see feedData(). Split because the overall figure is mostly
-    // ambient noise; only the in-frame one says anything about reception.
+    // Counted, never acted on — see feedData().
     if (_haveLevel && high == _lastHigh) {
       _levelRepeats++;
-      if (_inData) {
-        _levelRepeatsInFrame++;
-      }
     }
     _haveLevel = true;
     _lastHigh = high;
@@ -72,7 +68,6 @@ class SomfyDecoder {
   // Consecutive intervals at the same level, which cannot happen if every edge was seen —
   // so the sharpest available measure of how much the front end is dropping.
   uint32_t levelRepeats() const { return _levelRepeats; }
-  uint32_t levelRepeatsInFrame() const { return _levelRepeatsInFrame; }
 
   // Lets a diagnostic capture start where the data does; a sync burst otherwise fills the
   // buffer and the frame is clipped at the far end, which reads as corruption and is not.
@@ -170,7 +165,6 @@ class SomfyDecoder {
   uint32_t _abandoned = 0;
   uint32_t _badChecksum = 0;
   uint32_t _levelRepeats = 0;
-  uint32_t _levelRepeatsInFrame = 0;
   bool _bit = false;
   bool _frameStarted = false;
   bool _checksumFailed = false;
