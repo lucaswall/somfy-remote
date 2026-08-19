@@ -21,8 +21,6 @@
 
 namespace ctl {
 
-// Long enough for "Gallery handheld — all three" without cutting. 24 was not: three controls
-// in a row truncated to the same 23 characters and became indistinguishable from each other.
 static const uint8_t NAME_LEN = 40;
 
 // A dozen wall buttons plus two or three multi-channel handhelds. 1 KB total.

@@ -12,11 +12,8 @@
 #include "control_map.h"
 #include "somfy_frame.h"
 
-// Names come from Home Assistant and from the control form, into JSON built with snprintf.
-// One double quote makes /api/state unparseable, and the operation page's poll() only marks
-// itself stale — so it shows no shutters and no message, permanently, with /status fine and
-// nothing pointing at the cause. Escaped at the emitter because one of the three doors is
-// the MQTT names topic, which is not ours to filter.
+// Names reach three hand-built JSON documents, and one of the three doors is the MQTT names
+// topic, which is not ours to filter — so escape at the emitter rather than at each door.
 static void appendJsonString(char *out, size_t cap, const char *in) {
   size_t at = strlen(out);
   for (; *in != '\0' && at + 7 < cap; in++) {
@@ -33,6 +30,44 @@ static void appendJsonString(char *out, size_t cap, const char *in) {
   }
   out[at] = '\0';
 }
+
+// Each sendContent() on a chunked response allocates. These endpoints emit one per remote,
+// per control and per name, so batching turns twenty allocations into two.
+namespace {
+class Chunked {
+ public:
+  explicit Chunked(ESP8266WebServer &server) : _server(server) {}
+  ~Chunked() { flush(); }
+
+  void add(const char *text) {
+    const size_t len = strlen(text);
+    if (len >= sizeof(_buf)) {
+      flush();
+      _server.sendContent(text);
+      return;
+    }
+    if (_at + len >= sizeof(_buf)) {
+      flush();
+    }
+    memcpy(_buf + _at, text, len);
+    _at += len;
+  }
+
+  void flush() {
+    if (_at == 0) {
+      return;
+    }
+    _buf[_at] = '\0';
+    _server.sendContent(_buf);
+    _at = 0;
+  }
+
+ private:
+  ESP8266WebServer &_server;
+  size_t _at = 0;
+  char _buf[512];
+};
+}   // namespace
 
 void WebUi::loop() {
   if (!_started) {
@@ -85,12 +120,9 @@ void WebUi::start() {
           WiFi.localIP().toString().c_str());
 }
 
-// "Anyone in the house" and "any website anyone in the house visits" are different sets,
-// and neither a cross-origin form post nor a no-cors fetch triggers a preflight.
-//
 // An absent Origin is allowed — curl and anything scripted have no reason to send one. A
-// present one is compared against the Host header rather than a fixed name, because the UI
-// is reached both by IP and as <hostname>.local.
+// present one is matched against the Host header rather than a fixed name, because the UI is
+// reached both by IP and as <hostname>.local.
 bool WebUi::sameOrigin() {
   if (!_server.hasHeader("Origin")) {
     return true;
@@ -151,6 +183,7 @@ void WebUi::handleHeard() {
   _server.setContentLength(CONTENT_LENGTH_UNKNOWN);
   _server.sendHeader("Cache-Control", "no-store");
   _server.send(200, "application/json", "");
+  Chunked out(_server);
 
   snprintf(chunk, sizeof(chunk),
            "{\"armed\":%s,\"left\":%lu,\"edges\":%lu,\"frames\":%lu,\"presses\":%lu,"
@@ -161,7 +194,7 @@ void WebUi::handleHeard() {
            (unsigned long)rx.presses, rx.mutes, rx.muted ? "true" : "false",
            (unsigned long)rx.overflows, (unsigned long)rx.abandoned,
            (unsigned long)rx.badChecksum);
-  _server.sendContent(chunk);
+  out.add(chunk);
 
   const ctl::ControlMap &controls = _mqtt.controls();
   bool first = true;
@@ -175,30 +208,31 @@ void WebUi::handleHeard() {
              first ? "" : ",", (unsigned long)sighting.address, sighting.presses,
              sighting.lastCode, sighting.lastCommand,
              (unsigned long)(now - sighting.lastMs), (unsigned long)(now - sighting.firstMs));
-    _server.sendContent(chunk);
+    out.add(chunk);
     first = false;
   }
 
-  _server.sendContent("],\"known\":[");
+  out.add("],\"known\":[");
   for (uint8_t i = 0; i < controls.count(); i++) {
     const ctl::Control &control = controls.at(i);
     snprintf(chunk, sizeof(chunk), "%s{\"a\":%lu,\"name\":\"", i == 0 ? "" : ",",
              (unsigned long)control.address);
     appendJsonString(chunk, sizeof(chunk), control.name);
-    _server.sendContent(chunk);
+    out.add(chunk);
     snprintf(chunk, sizeof(chunk), "\",\"d\":%lu}", (unsigned long)control.drives);
-    _server.sendContent(chunk);
+    out.add(chunk);
   }
 
   // Display only, as everywhere else: every internal path is the index.
-  _server.sendContent("],\"names\":[");
+  out.add("],\"names\":[");
   for (uint8_t i = 0; i < _remotes.count(); i++) {
     snprintf(chunk, sizeof(chunk), "%s\"", i == 0 ? "" : ",");
     appendJsonString(chunk, sizeof(chunk), _mqtt.nameOf(i));
-    _server.sendContent(chunk);
-    _server.sendContent("\"");
+    out.add(chunk);
+    out.add("\"");
   }
-  _server.sendContent("]}");
+  out.add("]}");
+  out.flush();
   _server.sendContent("");
 }
 
@@ -255,8 +289,7 @@ void WebUi::handleControlSave() {
     _server.send(400, "text/plain", "a name is required\n");
     return;
   }
-  // Refused rather than cut. Silent truncation once turned three different controls into
-  // three identical names, which is worse than losing the save: the map still looks right.
+  // Refused rather than cut: a truncated name still looks like a name.
   if (overflowed) {
     char message[64];
     snprintf(message, sizeof(message), "name is longer than %u characters\n",
@@ -328,15 +361,17 @@ void WebUi::handleCapture() {
   _server.setContentLength(CONTENT_LENGTH_UNKNOWN);
   _server.sendHeader("Cache-Control", "no-store");
   _server.send(200, "text/plain", "");
+  Chunked out(_server);
   const uint16_t count = _receiver.captureCount();
   snprintf(line, sizeof(line), "# %u intervals, %s\n", count,
            _receiver.captureFrozen() ? "frozen on a failed frame" : "still running");
-  _server.sendContent(line);
+  out.add(line);
   for (uint16_t i = 0; i < count; i++) {
     const uint16_t entry = _receiver.captureAt(i);
     snprintf(line, sizeof(line), "%c %u\n", (entry & 0x8000u) ? 'H' : 'L', entry & 0x7FFFu);
-    _server.sendContent(line);
+    out.add(line);
   }
+  out.flush();
   _server.sendContent("");
 
   // Opt-in: a frozen capture is often the only artefact of a failure somebody had to press a
@@ -355,6 +390,7 @@ void WebUi::handleState() {
   _server.setContentLength(CONTENT_LENGTH_UNKNOWN);
   _server.sendHeader("Cache-Control", "no-store");
   _server.send(200, "application/json", "");
+  Chunked out(_server);
 
   snprintf(chunk, sizeof(chunk),
            "{\"host\":\"%s\",\"ip\":\"%s\",\"rssi\":%d,\"uptime\":%lu,\"heap\":%u,"
@@ -365,7 +401,7 @@ void WebUi::handleState() {
            _store.degraded() ? "true" : "false",
            _store.activeName(), _store.freeSlots(),
            (unsigned long)_mqtt.config().epoch);
-  _server.sendContent(chunk);
+  out.add(chunk);
 
   // The name comes from Home Assistant and is shown, never used to key anything: every
   // internal path here is the index. A remote with no name published simply reads as its
@@ -381,10 +417,11 @@ void WebUi::handleState() {
              (unsigned long)state.version(), _remotes.enabled(i) ? "true" : "false",
              _remotes.operational(i) ? "true" : "false",
              _remotes.transmittable(i) ? "true" : "false");
-    _server.sendContent(chunk);
+    out.add(chunk);
   }
 
-  _server.sendContent("]}");
+  out.add("]}");
+  out.flush();
   _server.sendContent("");
 }
 
@@ -648,6 +685,7 @@ void WebUi::handleStatus() {
   _server.setContentLength(CONTENT_LENGTH_UNKNOWN);
   _server.sendHeader("Cache-Control", "no-store");
   _server.send(200, "text/plain", body);
+  Chunked out(_server);
 
   // One line per remote, streamed for the same reason /api/state is. The rolling code is
   // here because a counter that has stopped moving while presses are logged is the
@@ -663,7 +701,7 @@ void WebUi::handleStatus() {
              (unsigned long)state.version(),
              _remotes.transmittable(i) ? "ready " : "BLOCKED",
              name[0] != '\0' ? name : "");
-    _server.sendContent(line);
+    out.add(line);
   }
 
   // Always, not only when armed: a muted receiver and a quiet house look identical.
@@ -673,7 +711,7 @@ void WebUi::handleStatus() {
            _receiver.armed() ? (rx.muted ? "MUTED" : "listening") : "off",
            (unsigned long)_receiver.edgesPerSecond(), (unsigned long)rx.frames,
            (unsigned long)rx.presses, _mqtt.controls().count());
-  _server.sendContent(line);
+  out.add(line);
   snprintf(line, sizeof(line),
            "        : %lus left, %lu int, %lu ring, %lu overflow, %lu abandoned, "
            "%lu bad checksum, %u mutes, peak %u/10ms, %lu level repeats%s\n",
@@ -684,6 +722,7 @@ void WebUi::handleStatus() {
            rx.ownAddress > 0    ? "  OWN ADDRESS HEARD"
            : rx.pressesDropped > 0 ? "  PRESSES DROPPED"
                                    : "");
-  _server.sendContent(line);
+  out.add(line);
+  out.flush();
   _server.sendContent("");
 }

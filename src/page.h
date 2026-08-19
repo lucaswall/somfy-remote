@@ -483,6 +483,6 @@ async function poll(){
   try { const s = await (await fetch('/api/heard')).json(); names = s.names; draw(s); } catch (e) {}
 }
 poll();
-setInterval(poll, 1000);
+setInterval(poll, 2000);   // served on the same thread as everything else
 </script></body></html>
 )HTML";

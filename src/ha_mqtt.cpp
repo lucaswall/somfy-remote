@@ -22,6 +22,11 @@ static const uint32_t RETRY_MAX_MS = 60000;
 static const uint16_t SOCKET_TIMEOUT_S = 2;
 static const uint32_t CLIENT_TIMEOUT_MS = 2000;
 
+// PubSubClient's 15 s is too tight for a device serving HTTP on the same thread —
+// ESP8266WebServer alone can spend 5 s waiting on one client. The cost of 45 is that a dead
+// bridge shows offline after a minute rather than twenty seconds.
+static const uint16_t KEEPALIVE_S = 45;
+
 // The largest discovery payload is the switch's, at just over 500 bytes with a device id
 // of a realistic length. The margin is for a longer one.
 static const size_t PAYLOAD_LEN = 768;
@@ -261,6 +266,7 @@ bool HaMqtt::connect() {
   _mqtt.setServer(MQTT_HOST, MQTT_PORT);
   _mqtt.setBufferSize(MQTT_BUFFER);
   _mqtt.setSocketTimeout(SOCKET_TIMEOUT_S);
+  _mqtt.setKeepAlive(KEEPALIVE_S);
   _wifi.setTimeout(CLIENT_TIMEOUT_MS);
   _mqtt.setCallback([this](char *topic, uint8_t *payload, unsigned int length) {
     onMessage(topic, payload, length);
