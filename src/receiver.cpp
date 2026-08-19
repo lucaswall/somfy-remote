@@ -338,6 +338,12 @@ void Receiver::recordSighting(const SomfyPress &press) {
     }
   }
 
+  if (!discovering()) {
+    _ignored++;   // heard, understood, and not ours to care about
+    return;
+  }
+  _discoverUntil = 0;   // one press per window: the next one is a different decision
+
   uint8_t slot = _sightingCount;
   if (_sightingCount < SIGHTING_SLOTS) {
     _sightingCount++;
@@ -352,6 +358,19 @@ void Receiver::recordSighting(const SomfyPress &press) {
     }
   }
   _sightings[slot] = {press.address, now, now, 1, press.rollingCode, press.command};
+}
+
+void Receiver::discover(uint16_t seconds) {
+  _discoverUntil = millis() + (uint32_t)seconds * 1000;
+  logLine("receiver  : learning a new control for %us", seconds);
+}
+
+bool Receiver::discovering() const {
+  return _discoverUntil != 0 && (int32_t)(millis() - _discoverUntil) < 0;
+}
+
+uint32_t Receiver::discoverSecondsLeft() const {
+  return discovering() ? (uint32_t)(_discoverUntil - millis()) / 1000 : 0;
 }
 
 void Receiver::forgetSighting(uint32_t address) {
@@ -384,6 +403,7 @@ Receiver::Stats Receiver::stats() const {
   s.mutes = _mutes;
   s.ownAddress = _ownAddress;
   s.pressesDropped = _pressesDropped;
+  s.ignored = _ignored;
   s.peakRate = isrPeakRate;
   s.levelRepeats = _decoder.levelRepeats();
   s.muted = _cooling;

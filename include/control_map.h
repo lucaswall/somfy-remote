@@ -32,6 +32,7 @@ static const size_t PAYLOAD_LEN = 224;
 struct Control {
   uint32_t address;
   uint32_t drives;   // bitmask over remote indices; rs::MAX_REMOTES is 30, so a u32 fits
+  uint32_t lastMs;   // runtime only: when it was last heard, so the list can order by it
   char name[NAME_LEN];
 };
 
@@ -106,7 +107,11 @@ class ControlMap {
   bool set(const Control &control) {
     for (uint8_t i = 0; i < _count; i++) {
       if (_controls[i].address == control.address) {
+        const uint32_t heard = _controls[i].lastMs;
         _controls[i] = control;
+        if (_controls[i].lastMs == 0) {
+          _controls[i].lastMs = heard;   // a rename must not forget when it was last used
+        }
         return true;
       }
     }
@@ -129,6 +134,15 @@ class ControlMap {
 
   uint8_t count() const { return _count; }
   const Control &at(uint8_t i) const { return _controls[i]; }
+
+  void heard(uint32_t address, uint32_t nowMs) {
+    for (uint8_t i = 0; i < _count; i++) {
+      if (_controls[i].address == address) {
+        _controls[i].lastMs = nowMs;
+        return;
+      }
+    }
+  }
 
  private:
   Control _controls[MAX_CONTROLS] = {};

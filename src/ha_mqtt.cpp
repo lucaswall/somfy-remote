@@ -175,6 +175,7 @@ void HaMqtt::applyHeardPresses() {
     if (control == nullptr) {
       continue;   // heard, recorded as a sighting, and waiting for a human to name it
     }
+    _controls.heard(press.address, millis());
 
     // Not retained: Home Assistant discards a retained payload on an event topic as a
     // replay, which is right.

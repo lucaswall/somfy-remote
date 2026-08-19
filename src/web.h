@@ -53,6 +53,7 @@ class WebUi {
   void handleControlForget();
   void handleControlIgnore();
   void handleCapture();
+  void handleLearn();
 
   bool _started = false;
 

@@ -69,6 +69,10 @@ class Chunked {
 };
 }   // namespace
 
+// Long enough to walk to the control and press it, short enough that a neighbour pressing
+// theirs in the meantime is unlikely.
+static const uint16_t LEARN_SECONDS = 120;
+
 void WebUi::loop() {
   if (!_started) {
     if (WiFi.status() == WL_CONNECTED) {
@@ -104,6 +108,7 @@ void WebUi::start() {
   _server.on("/api/control/save", HTTP_POST, [this]() { handleControlSave(); });
   _server.on("/api/control/forget", HTTP_POST, [this]() { handleControlForget(); });
   _server.on("/api/control/ignore", HTTP_POST, [this]() { handleControlIgnore(); });
+  _server.on("/api/control/learn", HTTP_POST, [this]() { handleLearn(); });
   _server.on("/api/capture", HTTP_GET, [this]() { handleCapture(); });
   _server.onNotFound([this]() { _server.send(404, "text/plain", "not found"); });
 
@@ -185,14 +190,17 @@ void WebUi::handleHeard() {
   Chunked out(_server);
 
   snprintf(chunk, sizeof(chunk),
-           "{\"listening\":%s,\"edges\":%lu,\"frames\":%lu,\"presses\":%lu,"
+           "{\"listening\":%s,\"learning\":%s,\"learnLeft\":%lu,"
+           "\"edges\":%lu,\"frames\":%lu,\"presses\":%lu,"
            "\"mutes\":%u,\"muted\":%s,\"overflows\":%lu,\"abandoned\":%lu,"
-           "\"badsum\":%lu,\"heard\":[",
+           "\"badsum\":%lu,\"ignored\":%u,\"heard\":[",
            _receiver.listening() ? "true" : "false",
+           _receiver.discovering() ? "true" : "false",
+           (unsigned long)_receiver.discoverSecondsLeft(),
            (unsigned long)_receiver.edgesPerSecond(), (unsigned long)rx.frames,
            (unsigned long)rx.presses, rx.mutes, rx.muted ? "true" : "false",
            (unsigned long)rx.overflows, (unsigned long)rx.abandoned,
-           (unsigned long)rx.badChecksum);
+           (unsigned long)rx.badChecksum, rx.ignored);
   out.add(chunk);
 
   const ctl::ControlMap &controls = _mqtt.controls();
@@ -218,7 +226,9 @@ void WebUi::handleHeard() {
              (unsigned long)control.address);
     appendJsonString(chunk, sizeof(chunk), control.name);
     out.add(chunk);
-    snprintf(chunk, sizeof(chunk), "\",\"d\":%lu}", (unsigned long)control.drives);
+    snprintf(chunk, sizeof(chunk), "\",\"d\":%lu,\"last\":%ld}",
+             (unsigned long)control.drives,
+             control.lastMs == 0 ? -1L : (long)(now - control.lastMs));
     out.add(chunk);
   }
 
@@ -233,6 +243,15 @@ void WebUi::handleHeard() {
   out.add("]}");
   out.flush();
   _server.sendContent("");
+}
+
+// Opens the window in which one unrecognised address may join the list.
+void WebUi::handleLearn() {
+  if (!sameOrigin() || !settingsAuthorised()) {
+    return;
+  }
+  _receiver.discover(LEARN_SECONDS);
+  _server.send(200, "text/plain", "learning\n");
 }
 
 void WebUi::handleControlSave() {

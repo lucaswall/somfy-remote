@@ -43,6 +43,14 @@ class Receiver {
   // False while the rate limiter is backing off after a noise storm.
   bool listening() const { return _attached; }
 
+  // A control the bridge has never heard is only added while this window is open, so a
+  // neighbour's remote pressed at the wrong moment does not join the list. It closes on the
+  // first new address, or on the timeout. Presses from addresses already on the list are
+  // never gated.
+  void discover(uint16_t seconds);
+  bool discovering() const;
+  uint32_t discoverSecondsLeft() const;
+
   void loop();
 
   // Bracket a transmission: the radio cannot do both at once, and only one side may drive
@@ -80,6 +88,7 @@ class Receiver {
     uint16_t mutes;
     uint16_t ownAddress;    // frames carrying one of our own addresses: impossible, so a fault
     uint16_t pressesDropped;
+    uint16_t ignored;        // presses from addresses nobody has asked to learn
     uint16_t peakRate;       // busiest 10 ms window ever seen, in edges
     uint32_t levelRepeats;   // how badly the front end is dropping edges
     bool muted;
@@ -119,6 +128,8 @@ class Receiver {
   bool _cooling = false;
   bool _suspended = false;
   uint32_t _blankUntil = 0;
+  uint32_t _discoverUntil = 0;
+  uint16_t _ignored = 0;
   uint32_t _muteUntil = 0;
   uint32_t _backoffMs = 1000;
   uint32_t _cleanSince = 0;
