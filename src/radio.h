@@ -29,6 +29,15 @@ class SomfyRadio {
   // while the chip is listening would otherwise put two push-pull drivers on one wire.
   void listener(Receiver *receiver) { _receiver = receiver; }
 
+  // Proves the GDO0 wire is actually connected, with no RF involved at all: the chip drives
+  // that pin to a known level and the ESP reads it back, twice, both ways round.
+  //
+  // docs/hardware.md used to say this was the one wire the chip could not check, and that
+  // was true for as long as only the ESP ever drove it. It is not true any more, and it
+  // matters more now: transmit fails visibly, because a shutter does not move, while
+  // receive on a broken wire looks exactly like a quiet house.
+  bool testDataPin();
+
   // Receive-side pass-throughs, for the receiver. Here rather than on the driver because
   // the driver has no idea a pin is being shared.
   bool receive() { return _cc1101.receive(); }

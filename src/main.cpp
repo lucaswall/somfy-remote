@@ -86,6 +86,13 @@ void setup() {
 
   if (radio.begin()) {
     logLine("radio     : CC1101 ready on 433.42 MHz");
+    // Transmit fails loudly — a shutter does not move. Receive on a broken data wire fails
+    // silently, and looks exactly like a house where nobody is pressing anything.
+    if (radio.testDataPin()) {
+      logLine("radio     : GDO0 wire verified both ways");
+    } else {
+      logError("radio     : GDO0 does not read back — check the wire to D1/GPIO5");
+    }
   } else {
     logError("radio     : CC1101 did not answer, will retry — run `make radio`");
   }

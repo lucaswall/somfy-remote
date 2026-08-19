@@ -59,6 +59,10 @@ static const uint32_t STATE_TIMEOUT_US = 10000;
 // drive the same wire to transmit. Datasheet Table 41.
 static const uint8_t GDO0_SERIAL_DATA = 0x0D;
 static const uint8_t GDO0_HIGH_Z = 0x2E;
+// "HW to 0", with bit 6 being GDOx_INV — so 0x2F drives the pin low and 0x6F drives it
+// high, whatever the radio is doing. Table 41 again.
+static const uint8_t GDO0_DRIVE_LOW = 0x2F;
+static const uint8_t GDO0_DRIVE_HIGH = 0x6F;
 
 // The chip pulls MISO low when it is ready to accept a header byte. Waiting on that is
 // the datasheet's handshake; skipping it drops bytes on the first access after a reset.
@@ -118,6 +122,10 @@ bool CC1101::receive() {
 void CC1101::release() {
   strobe(SIDLE);
   writeRegister(REG_IOCFG0, GDO0_HIGH_Z);
+}
+
+void CC1101::driveGdo0(bool high) {
+  writeRegister(REG_IOCFG0, high ? GDO0_DRIVE_HIGH : GDO0_DRIVE_LOW);
 }
 
 void CC1101::idle() { strobe(SIDLE); }

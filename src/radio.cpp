@@ -48,6 +48,25 @@ bool SomfyRadio::begin() {
   return _ready;
 }
 
+bool SomfyRadio::testDataPin() {
+  if (!_ready) {
+    return false;
+  }
+
+  pinMode(_dataPin, INPUT);
+  _cc1101.driveGdo0(false);
+  delayMicroseconds(50);   // a GDO output settles in nanoseconds; this is for the dupont
+  const bool readLow = digitalRead(_dataPin) != 0;
+  _cc1101.driveGdo0(true);
+  delayMicroseconds(50);
+  const bool readHigh = digitalRead(_dataPin) != 0;
+
+  _cc1101.release();
+  digitalWrite(_dataPin, LOW);
+  pinMode(_dataPin, OUTPUT);
+  return !readLow && readHigh;
+}
+
 bool SomfyRadio::send(SomfyCommand command, uint32_t address, uint16_t rollingCode) {
   if (!_ready) {
     return false;

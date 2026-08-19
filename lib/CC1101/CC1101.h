@@ -53,6 +53,11 @@ class CC1101 {
   // the only state in which it is safe to key the transmitter by hand.
   void release();
 
+  // Drives GDO0 to a fixed level — "HW to 0", and the same inverted. It exists for one
+  // purpose: the ESP can then read that pin back and find out whether the wire is really
+  // there. Nothing else in this driver can answer that question.
+  void driveGdo0(bool high);
+
   void idle();
 
   uint8_t state() { return readStatus(CC1101_MARCSTATE); }
