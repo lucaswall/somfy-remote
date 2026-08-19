@@ -31,6 +31,12 @@ static const size_t PAYLOAD_LEN = 768;
 static_assert(sizeof(MQTT_DEVICE_ID) + sizeof("/remote29/my_state") - 1 <= TOPIC_LEN,
               "MQTT_DEVICE_ID is too long: see TOPIC_LEN in include/topics.h");
 
+// OBJECT_ID_LEN is the tighter of the two: "<id>29_cover" has to fit as well, and a
+// truncated unique_id is worse than a truncated topic — two remotes would collide on one
+// Home Assistant entity rather than merely on one topic.
+static_assert(sizeof(MQTT_DEVICE_ID) + sizeof("29_cover") - 1 <= OBJECT_ID_LEN,
+              "MQTT_DEVICE_ID is too long: see OBJECT_ID_LEN in include/topics.h");
+
 void HaMqtt::loop() {
   if (WiFi.status() != WL_CONNECTED) {
     return;
@@ -177,9 +183,15 @@ void HaMqtt::publishDiscovery(uint8_t remote) {
         doc["payload_stop"] = "My";
         // RTS is one-way. Home Assistant shows both buttons at all times rather than
         // hiding the one it thinks is redundant, because what it thinks may be wrong.
-        // The key is `optimistic`: MQTT discovery drops anything outside its schema, and
-        // `assumed_state` — which is what the attribute is called on the entity — is not
-        // in it, so asking for it by that name asks for nothing.
+        //
+        // `optimistic` is the documented key for that, and the only one to rely on. The
+        // 2023 sketch asked for it as `assumed_state`, which is what the attribute is
+        // called on the entity but is not in the MQTT cover schema; the running
+        // installation does set the attribute from it, so it is tolerated today rather
+        // than dropped. Tolerated is not promised — an undocumented key that a stricter
+        // schema later rejects takes the whole discovery config with it, and twelve
+        // covers with it. State still arrives on the state topic either way: optimistic
+        // only means the entity moves on the command instead of waiting for us.
         doc["optimistic"] = true;
         break;
     }
