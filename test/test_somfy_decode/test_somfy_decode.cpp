@@ -231,10 +231,16 @@ static void a_truncated_frame_yields_nothing_and_recovers(void) {
   TEST_ASSERT_EQUAL_HEX32(0x0000AA, after[0].address);
 }
 
-// Levels alternate by construction — every edge flips the line. Two intervals in a row at
-// the same level means an edge was lost, so the bit phase is no longer trustworthy and the
-// frame must be abandoned rather than half-believed.
-static void abandons_the_frame_when_an_edge_is_lost(void) {
+// An edge lost mid-frame slips the bit phase by half a symbol, so every bit after it is
+// wrong and the checksum does not hold.
+//
+// This used to be caught structurally, by noticing that two consecutive intervals arrived at
+// the same level when every edge flips the line. That check had to go: on real hardware the
+// glitch filter drops an arbitrary number of edges under noise, the recorded level alternates
+// only about a fifth of the time, and a decoder that vetoed on it decoded nothing whatsoever.
+// What is left is the checksum plus the requirement that two copies of a press agree, which
+// is what every implementation of this protocol has always relied on.
+static void a_lost_edge_fails_the_checksum(void) {
   uint8_t frame[SOMFY_FRAME_LEN];
   somfyBuildFrame(SOMFY_UP, 0x0004, 0x0000BB, frame);
 
@@ -404,7 +410,7 @@ int main(void) {
   RUN_TEST(refuses_to_decode_noise);
   RUN_TEST(decodes_a_frame_that_follows_noise);
   RUN_TEST(a_truncated_frame_yields_nothing_and_recovers);
-  RUN_TEST(abandons_the_frame_when_an_edge_is_lost);
+  RUN_TEST(a_lost_edge_fails_the_checksum);
   RUN_TEST(five_copies_of_one_press_report_it_once);
   RUN_TEST(one_copy_is_not_a_press);
   RUN_TEST(consecutive_presses_are_two_presses);

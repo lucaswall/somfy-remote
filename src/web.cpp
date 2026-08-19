@@ -48,6 +48,7 @@ void WebUi::start() {
   _server.on("/api/control/save", HTTP_POST, [this]() { handleControlSave(); });
   _server.on("/api/control/forget", HTTP_POST, [this]() { handleControlForget(); });
   _server.on("/api/control/ignore", HTTP_POST, [this]() { handleControlIgnore(); });
+  _server.on("/api/capture", HTTP_GET, [this]() { handleCapture(); });
   _server.onNotFound([this]() { _server.send(404, "text/plain", "not found"); });
   _server.begin();
 
@@ -255,6 +256,30 @@ void WebUi::handleControlIgnore() {
   _receiver.forgetSighting(
       (uint32_t)strtoul(_server.arg("address").c_str(), nullptr, 10) & 0xFFFFFFu);
   _server.send(200, "text/plain", "dropped\n");
+}
+
+// The last intervals the decoder was fed, oldest first, as plain text.
+//
+// This is the tool for the one question the counters cannot answer: a decoder that rejects
+// everything and a radio that hears nothing look identical from outside, and the difference
+// is visible in about twenty numbers.
+void WebUi::handleCapture() {
+  if (!settingsAuthorised()) {
+    return;
+  }
+
+  char line[48];
+  _server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  _server.sendHeader("Cache-Control", "no-store");
+  _server.send(200, "text/plain", "");
+  snprintf(line, sizeof(line), "# last %u intervals\n", _receiver.captureCount());
+  _server.sendContent(line);
+  for (uint16_t i = 0; i < _receiver.captureCount(); i++) {
+    const uint16_t entry = _receiver.captureAt(i);
+    snprintf(line, sizeof(line), "%c %u\n", (entry & 0x8000u) ? 'H' : 'L', entry & 0x7FFFu);
+    _server.sendContent(line);
+  }
+  _server.sendContent("");
 }
 
 // Streamed rather than assembled: the remote list grows with the installation, and the
@@ -583,10 +608,12 @@ void WebUi::handleStatus() {
            (unsigned long)rx.presses, _mqtt.controls().count());
   _server.sendContent(line);
   snprintf(line, sizeof(line),
-           "        : %lus left, %lu int, %lu ring, %lu overflow, %lu aborted, %u mutes%s\n",
+           "        : %lus left, %lu int, %lu ring, %lu overflow, %lu aborted, %u mutes, "
+           "peak %u/10ms, %u level repeats%s\n",
            (unsigned long)_receiver.secondsLeft(), (unsigned long)rx.interrupts,
            (unsigned long)rx.ringWrites, (unsigned long)rx.overflows,
-           (unsigned long)rx.aborted, rx.mutes,
+           (unsigned long)rx.aborted, rx.mutes, (unsigned)rx.peakRate,
+           (unsigned)rx.levelRepeats,
            rx.ownAddress > 0    ? "  OWN ADDRESS HEARD"
            : rx.pressesDropped > 0 ? "  PRESSES DROPPED"
                                    : "");

@@ -30,6 +30,20 @@
 // missing rows nobody could know were missing. Twenty bytes each.
 #define SIGHTING_SLOTS 40
 
+// A window onto what the air actually looks like: the last 192 intervals the decoder was
+// fed, as it was fed them. About a frame and a half — enough to see a sync burst, the
+// software sync and the start of the data, and enough to tell a remote whose timings differ
+// from ours apart from a receiver that is hearing noise between the symbols.
+//
+// Always running, and circular. A one-shot capture has to be armed before the thing worth
+// capturing happens, which is not a thing anybody can time from a web page; keeping the most
+// recent intervals means the answer is already there by the time somebody thinks to look.
+// Two bytes each, level in the top bit.
+//
+// It exists because a decoder that rejects everything and a radio that hears nothing produce
+// identical counters, and no amount of staring at those counters tells them apart.
+#define CAPTURE_SLOTS 192
+
 // What the bridge has heard from one address it does not know yet.
 struct Sighting {
   uint32_t address;
@@ -70,6 +84,12 @@ class Receiver {
   // them, which is not this class.
   bool takePress(SomfyPress *out);
 
+  // The last N intervals, oldest first.
+  uint16_t captureCount() const { return _captureFilled ? CAPTURE_SLOTS : _captureHead; }
+  uint16_t captureAt(uint16_t i) const {
+    return _capture[_captureFilled ? (uint16_t)((_captureHead + i) % CAPTURE_SLOTS) : i];
+  }
+
   uint8_t sightingCount() const { return _sightingCount; }
   const Sighting &sighting(uint8_t i) const { return _sightings[i]; }
   void forgetSighting(uint32_t address);
@@ -87,6 +107,8 @@ class Receiver {
     uint16_t mutes;
     uint16_t ownAddress;    // frames carrying one of our own addresses: impossible, so a fault
     uint16_t pressesDropped;
+    uint16_t peakRate;       // busiest 10 ms window ever seen, in edges
+    uint16_t levelRepeats;   // how badly the front end is dropping edges
     bool muted;
   };
   Stats stats() const;
@@ -111,6 +133,10 @@ class Receiver {
   uint8_t _pressHead = 0;
   uint8_t _pressTail = 0;
   uint16_t _pressesDropped = 0;
+
+  uint16_t _capture[CAPTURE_SLOTS] = {};
+  uint16_t _captureHead = 0;
+  bool _captureFilled = false;
 
   uint32_t _lastEntry = 0;
   bool _haveLastEntry = false;

@@ -54,17 +54,12 @@ class SomfyDecoder {
   }
 
   bool feed(bool high, uint32_t microseconds, SomfyHeard *out) {
-    // Levels alternate by construction: every edge flips the line. Two intervals in a row
-    // at the same level means an edge was lost — merged with a glitch, or dropped when the
-    // ring overflowed — and the bit phase is no longer trustworthy. Half a frame decoded
-    // out of phase is not a corrupt frame, it is a different remote's address.
-    const bool lostAnEdge = _haveLevel && high == _lastHigh;
+    // The level is recorded, counted and *not* acted on. See the note above emit().
+    if (_haveLevel && high == _lastHigh) {
+      _levelRepeats++;
+    }
     _haveLevel = true;
     _lastHigh = high;
-    if (lostAnEdge) {
-      abandon();
-      return false;
-    }
 
     if (microseconds > SOMFY_GAP_US) {
       reset();
@@ -74,7 +69,7 @@ class SomfyDecoder {
     }
 
     if (_inData) {
-      return feedData(high, microseconds, out);
+      return feedData(microseconds, out);
     }
     feedSync(microseconds);
     return false;
@@ -83,6 +78,12 @@ class SomfyDecoder {
   // Frames abandoned part-way. A receiver that decodes nothing looks identical to a quiet
   // house, and this is the counter that tells them apart.
   uint16_t aborted() const { return _aborted; }
+
+  // How often two consecutive intervals arrived at the same level, which cannot happen if
+  // every edge was seen. It is the sharpest measure available of how much the front end is
+  // dropping: near zero means a clean line, and a large fraction means the data pin is
+  // chattering faster than anything downstream can follow.
+  uint16_t levelRepeats() const { return _levelRepeats; }
 
  private:
   void abandon() {
@@ -110,25 +111,37 @@ class SomfyDecoder {
       _inData = true;
       _bits = 0;
       _waitingHalf = false;
+      _bit = false;   // the toggle's seed: the first full symbol after sync is a 1
       return;
     }
     _syncIntervals = 0;
   }
 
-  // Manchester, inverted: a 1 is low then high. The bit is therefore always the complement
-  // of the level of the interval it is emitted on, whether that interval is one merged full
-  // symbol or the second of two half symbols.
+  // Manchester, inverted: a 1 is low then high. Bits come from the *durations* alone, with a
+  // running toggle seeded at the software sync — a full symbol flips the current bit and
+  // emits it, and a pair of half symbols emits it again unchanged.
   //
-  // Deriving the bit from the level rather than from a running toggle is what makes a lost
-  // edge detectable at all: a toggle that slips produces a full frame of plausible garbage,
-  // and nothing downstream could ever tell.
-  bool feedData(bool high, uint32_t microseconds, SomfyHeard *out) {
+  // An earlier version of this derived the bit from the level of the interval instead, which
+  // is equivalent on a clean stream and looked strictly better: a toggle that slips yields a
+  // whole frame of plausible garbage, while a level that repeats is a lost edge you can
+  // catch. On this hardware it decoded nothing at all.
+  //
+  // The reason is the glitch filter in front of it. It drops every edge closer than
+  // SOMFY_SYMBOL_US * 0.7 to the last one it kept, and under a noisy OOK line that is an
+  // arbitrary number of edges rather than a tidy pair — so the recorded level is very nearly
+  // random. Measured on the installed board: the level alternated on 19 % of transitions
+  // where it must alternate on 100 %, biased high because a chattering data line sits high.
+  //
+  // Every reference implementation of this protocol decodes from durations, and this is why.
+  // The level is still recorded, because levelRepeats() is the number that found this.
+  bool feedData(uint32_t microseconds, SomfyHeard *out) {
     if (somfyNear(microseconds, 2 * SOMFY_SYMBOL_US)) {
       if (_waitingHalf) {
         abandon();   // a full symbol cannot follow a lone half: the phase is wrong
         return false;
       }
-      return emit(!high, out);
+      _bit = !_bit;
+      return emit(_bit, out);
     }
     if (somfyNear(microseconds, SOMFY_SYMBOL_US)) {
       if (!_waitingHalf) {
@@ -136,7 +149,7 @@ class SomfyDecoder {
         return false;
       }
       _waitingHalf = false;
-      return emit(!high, out);
+      return emit(_bit, out);
     }
     abandon();
     return false;
@@ -160,6 +173,8 @@ class SomfyDecoder {
 
   uint8_t _frame[SOMFY_FRAME_LEN] = {0};
   uint16_t _aborted = 0;
+  uint16_t _levelRepeats = 0;
+  bool _bit = false;
   uint8_t _syncIntervals = 0;
   uint8_t _bits = 0;
   bool _inData = false;

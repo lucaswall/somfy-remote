@@ -61,6 +61,7 @@ class WebUi {
   void handleControlSave();
   void handleControlForget();
   void handleControlIgnore();
+  void handleCapture();
 
   bool _started = false;
 

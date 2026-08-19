@@ -31,11 +31,24 @@
 #define GLITCH_US 448
 
 // The rate limit, as a budget rather than a number picked by feel: at most 2 % of the CPU
-// in this handler. One interrupt measured a shade under 4 µs, so 2 % of a 10 ms window is
+// in this handler. One interrupt costs a shade under 4 µs, so 2 % of a 10 ms window is
 // fifty of them — 5 kHz sustained. Past that the receiver mutes itself and the main loop
 // backs it off, because a feature nobody is watching must not compete with the WiFi stack.
 #define RATE_WINDOW_US 10000
 #define EDGE_BUDGET 50
+
+// ...but only when it stays over budget. This is the correction to a limiter that fired on
+// the first press it ever heard.
+//
+// A real transmission is loud, and an OOK receiver fills the silence between symbols with
+// whatever the AGC can find, so the interrupt rate during a press is far above the rate in
+// a quiet band — measured at six times it. Muting detaches the interrupt, so a limiter that
+// fires on one 10 ms window destroys the reception it exists to protect.
+//
+// What actually distinguishes the two is duration, not rate. A press is five frames over
+// about 800 ms. A noise storm is minutes. Two seconds of continuous over-budget windows is
+// comfortably longer than any press and far shorter than anything worth backing off from.
+#define OVER_BUDGET_WINDOWS 200
 
 // Presses waiting to be acted on. Four, matching the burst slots: two people pressing at
 // once during the naming walk is the case that produces more than one in a single drain,
@@ -50,6 +63,8 @@ static volatile bool isrMuted = false;
 static volatile uint32_t isrLastEdge = 0;
 static volatile uint32_t isrWindowStart = 0;
 static volatile uint16_t isrWindowEdges = 0;
+static volatile uint16_t isrOverBudget = 0;
+static volatile uint16_t isrPeakRate = 0;   // busiest window seen, in edges per 10 ms
 static volatile uint32_t isrInterrupts = 0;
 static volatile uint32_t isrRingWrites = 0;
 static volatile uint32_t isrOverflows = 0;
@@ -68,10 +83,17 @@ static void IRAM_ATTR onEdge() {
   // glitch filter. A storm of sub-symbol noise is invisible past the filter and still costs
   // the whole CPU bill; counting after it would report a quiet ring while the SDK starved.
   if ((uint32_t)(now - isrWindowStart) >= RATE_WINDOW_US) {
+    if (isrWindowEdges > isrPeakRate) {
+      isrPeakRate = isrWindowEdges;
+    }
+    // Consecutive, not cumulative: one busy window in the middle of a quiet minute says
+    // somebody pressed a button, and that is the opposite of a reason to stop listening.
+    isrOverBudget = isrWindowEdges > EDGE_BUDGET ? (uint16_t)(isrOverBudget + 1) : 0;
     isrWindowStart = now;
     isrWindowEdges = 0;
   }
-  if (++isrWindowEdges > EDGE_BUDGET) {
+  isrWindowEdges++;
+  if (isrOverBudget >= OVER_BUDGET_WINDOWS) {
     isrMuted = true;   // the main loop does the detaching; this is not the place for it
     return;
   }
@@ -164,6 +186,7 @@ bool Receiver::attach() {
 
   isrMuted = false;
   isrWindowEdges = 0;
+  isrOverBudget = 0;
   isrWindowStart = micros();
   isrLastEdge = isrWindowStart;
   ringTail = ringHead;
@@ -301,6 +324,15 @@ void Receiver::applyEdges() {
     const bool high = (_lastEntry & 1u) != 0;
     _lastEntry = entry;
 
+    // Clamped rather than dropped: an interval longer than a frame contains is a gap, and
+    // seeing where the gaps fall is half of what makes a capture readable.
+    const uint16_t clamped = interval > 0x7FFF ? 0x7FFF : (uint16_t)interval;
+    _capture[_captureHead] = (uint16_t)(clamped | (high ? 0x8000u : 0u));
+    _captureHead = (uint16_t)((_captureHead + 1) % CAPTURE_SLOTS);
+    if (_captureHead == 0) {
+      _captureFilled = true;
+    }
+
     SomfyHeard heard;
     if (!_decoder.feed(high, interval, &heard)) {
       continue;
@@ -399,6 +431,8 @@ Receiver::Stats Receiver::stats() const {
   s.mutes = _mutes;
   s.ownAddress = _ownAddress;
   s.pressesDropped = _pressesDropped;
+  s.peakRate = isrPeakRate;
+  s.levelRepeats = _decoder.levelRepeats();
   s.muted = _cooling;
   return s;
 }
