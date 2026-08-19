@@ -39,6 +39,7 @@ void WebUi::start() {
   _server.on("/status", HTTP_GET, [this]() { handleStatus(); });
   _server.on("/api/remote/add", HTTP_POST, [this]() { handleRemoteAdd(); });
   _server.on("/api/remote/remove", HTTP_POST, [this]() { handleRemoteRemove(); });
+  _server.on("/api/remote/flags", HTTP_POST, [this]() { handleRemoteFlags(); });
   _server.onNotFound([this]() { _server.send(404, "text/plain", "not found"); });
   _server.begin();
 
@@ -156,6 +157,65 @@ void WebUi::handleSend() {
 
   _remotes.queue((uint8_t)remote, command);
   handleState();
+}
+
+// Sets either flag on one remote. Both are absent-means-unchanged, so the page can toggle
+// one without having to restate the other.
+//
+// `operational` is the guard the send path consults: false and the firmware refuses to
+// transmit for that remote, whoever asks and by whatever route. It is for a shutter that
+// is known not to work, so that "do not drive this one" is enforced rather than remembered.
+//
+// `enabled` is whether Home Assistant has entities for it at all. Turning it back on is how
+// a removed remote comes back — it keeps its index and its rolling code, so it resumes
+// where it left off rather than restarting a counter a motor has already seen.
+void WebUi::handleRemoteFlags() {
+  if (!settingsAuthorised()) {
+    return;
+  }
+  const String number = _server.arg("remote");
+  char *end = nullptr;
+  const long remote = strtol(number.c_str(), &end, 10);
+  if (number.length() == 0 || *end != '\0' || remote < 0 || remote >= _remotes.count()) {
+    _server.send(404, "text/plain", "no such remote\n");
+    return;
+  }
+
+  cfg::ConfigDoc next = _mqtt.config();
+  cfg::RemoteConfig *entry = nullptr;
+  for (uint8_t i = 0; i < next.entries; i++) {
+    if (next.remotes[i].index == (uint8_t)remote) {
+      entry = &next.remotes[i];
+    }
+  }
+  if (entry == nullptr) {
+    _server.send(404, "text/plain", "no such remote\n");
+    return;
+  }
+
+  const bool wasEnabled = entry->enabled;
+  if (_server.hasArg("operational")) {
+    entry->operational = _server.arg("operational") == "1";
+  }
+  if (_server.hasArg("enabled")) {
+    entry->enabled = _server.arg("enabled") == "1";
+  }
+
+  if (!_mqtt.applyConfig(next, "ui")) {
+    _server.send(500, "text/plain", "could not persist configuration\n");
+    return;
+  }
+  // Going the other way needs the entities taken out of Home Assistant explicitly; a
+  // discovery config that is simply no longer republished stays where it is.
+  if (wasEnabled && !entry->enabled) {
+    _mqtt.publishDiscoveryRemoval((uint8_t)remote);
+  }
+
+  char body[96];
+  snprintf(body, sizeof(body), "remote %ld: %s, %s\n", remote,
+           entry->enabled ? "in Home Assistant" : "removed",
+           entry->operational ? "operational" : "not operational");
+  _server.send(200, "text/plain", body);
 }
 
 // Behind the settings password. Held down at the motor, Prog enrols or drops this emulated

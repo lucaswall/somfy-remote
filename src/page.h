@@ -222,8 +222,9 @@ function build(n){
       <div class="hdr"><b id="n${i}">Remote ${i}</b><span class="badge" id="p${i}">&mdash;</span></div>
       <div class="meta" id="c${i}"></div>
       <div class="row" style="margin-top:10px">
+        <button id="o${i}" onclick="setOperational(${i})">&mdash;</button>
         <button class="prog" onclick="prog(${i})">Prog</button>
-        <button class="danger" onclick="removeRemote(${i})">Remove</button>
+        <button class="danger" id="e${i}" onclick="setEnabled(${i})">&mdash;</button>
       </div>
     </div>`).join('');
   built = n;
@@ -245,11 +246,18 @@ function render(s){
                   : (r.operational ? 'operational' : 'not operational');
     b.className = 'badge ' + (r.enabled && r.operational ? 'open' : 'blocked');
     $('c' + r.n).textContent = `next code ${r.code}`;
+    // The buttons say what they will do, not what the state is.
+    const op = $('o' + r.n);
+    op.textContent = r.operational ? 'Set not operational' : 'Set operational';
+    op.className = r.operational ? '' : 'pri';
+    const en = $('e' + r.n);
+    en.textContent = r.enabled ? 'Remove' : 'Restore';
+    en.className = r.enabled ? 'danger' : 'prog';
   }
 }
 
 async function poll(){
-  try { render(await (await fetch('/api/state')).json()); } catch(e) {}
+  try { last = await (await fetch('/api/state')).json(); render(last); } catch(e) {}
 }
 
 // Prog lives here rather than on the operation page because it is the one press that
@@ -271,10 +279,28 @@ async function addRemote(){
   poll();
 }
 
-async function removeRemote(n){
-  if (!confirm(`Remove remote ${n}? Its Home Assistant entities go away. `
-             + `The rolling code is kept, so adding it back resumes where it left off.`)) return;
-  const r = await fetch(`/api/remote/remove?remote=${n}`, {method:'POST'});
+// Not operational means the firmware refuses to transmit for this remote at all — from
+// Home Assistant, from this page, from anywhere. It is for a shutter that is known not to
+// work, so the rule is enforced rather than remembered.
+let last = null;
+async function setOperational(n){
+  const r0 = last && last.remotes.find(r => r.n === n);
+  const on = r0 && r0.operational ? '0' : '1';
+  if (on === '1' && !confirm(`Allow remote ${n} to be driven again?`)) return;
+  const r = await fetch(`/api/remote/flags?remote=${n}&operational=${on}`, {method:'POST'});
+  alert(await r.text());
+  poll();
+}
+
+// Removing keeps the index and the rolling code; only the Home Assistant entities go.
+// Restoring brings them back with the counter where it left off, which is why the index is
+// never reused for anything else.
+async function setEnabled(n){
+  const r0 = last && last.remotes.find(r => r.n === n);
+  const on = r0 && r0.enabled ? '0' : '1';
+  if (on === '0' && !confirm(`Remove remote ${n}? Its Home Assistant entities go away. `
+      + `The rolling code is kept, so restoring it resumes where it left off.`)) return;
+  const r = await fetch(`/api/remote/flags?remote=${n}&enabled=${on}`, {method:'POST'});
   alert(await r.text());
   poll();
 }

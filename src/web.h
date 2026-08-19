@@ -45,6 +45,7 @@ class WebUi {
   void handleProg();
   void handleRemoteAdd();
   void handleRemoteRemove();
+  void handleRemoteFlags();
 
   bool _started = false;
 
