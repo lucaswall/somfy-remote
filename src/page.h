@@ -43,6 +43,9 @@ border-radius:999px;padding:2px 10px;white-space:nowrap}
 .badge.open{color:var(--ok);border-color:var(--ok)}
 .badge.closed{color:var(--accent);border-color:var(--accent)}
 .badge.blocked{color:var(--warn);border-color:var(--warn)}
+.badge.opening,.badge.closing{color:var(--fg);border-color:var(--fg);
+animation:pulse 1.4s ease-in-out infinite}
+@keyframes pulse{50%{opacity:.45}}
 .row{display:flex;gap:8px}
 input{flex:1;min-height:46px;border-radius:11px;border:1px solid var(--line);
 background:#1e242e;color:var(--fg);padding:0 12px;font-size:14px}
@@ -177,7 +180,8 @@ function render(s){
     // everything here — topics, entity ids, rolling codes — is actually keyed on.
     $('n' + r.n).textContent = r.name ? `${r.name} (${r.n})` : `Remote ${r.n}`;
     const b = $('p' + r.n);
-    b.textContent = r.ready ? r.position : (r.enabled ? 'not operational' : 'removed');
+    const where = r.pct < 0 ? r.position : `${r.position} ${r.pct}%`;
+    b.textContent = r.ready ? where : (r.enabled ? 'not operational' : 'removed');
     b.className = 'badge ' + (r.ready ? (r.position === 'unknown' ? '' : r.position)
                                       : 'blocked');
     // A shutter the firmware refuses to drive gets dead buttons rather than live ones
@@ -260,6 +264,12 @@ function build(n){
       <div class="hdr"><b id="n${i}">Remote ${i}</b><span class="badge" id="p${i}">&mdash;</span></div>
       <div class="meta" id="c${i}"></div>
       <div class="row" style="margin-top:10px">
+        <label class="f" for="t${i}">Travel</label>
+        <input type="number" id="t${i}" min="1" max="255" step="1" style="width:5.5em"
+               onchange="setTravel(${i})">
+        <span class="meta">seconds, fully open to fully shut</span>
+      </div>
+      <div class="row" style="margin-top:10px">
         <button id="o${i}" onclick="setOperational(${i})">&mdash;</button>
         <button class="prog" onclick="prog(${i})">Prog</button>
         <button class="danger" id="e${i}" onclick="setEnabled(${i})">&mdash;</button>
@@ -282,6 +292,9 @@ function render(s){
                   : (r.operational ? 'operational' : 'not operational');
     b.className = 'badge ' + (r.enabled && r.operational ? 'open' : 'blocked');
     $('c' + r.n).textContent = `next code ${r.code}`;
+    // Never over a value being typed: a two-second poll would eat every keystroke.
+    const t = $('t' + r.n);
+    if (document.activeElement !== t) t.value = r.travel;
     // The buttons say what they will do, not what the state is.
     const op = $('o' + r.n);
     op.textContent = r.operational ? 'Set not operational' : 'Set operational';
@@ -294,6 +307,17 @@ function render(s){
 
 async function poll(){
   try { last = await (await fetch('/api/state')).json(); render(last); } catch(e) {}
+}
+
+// How long the motor takes end to end. Everything the device reports about where a shutter
+// is comes from this number and a clock, so a wrong one is a cover that reads wrong.
+async function setTravel(n){
+  const el = $('t' + n);
+  const r = await fetch(`/api/remote/flags?remote=${n}&travel=${encodeURIComponent(el.value)}`,
+                        {method:'POST'});
+  if (!r.ok) { alert('NOT saved: ' + (await r.text())); poll(); return; }
+  el.blur();
+  poll();
 }
 
 // Prog lives here rather than on the operation page because it is the one press that

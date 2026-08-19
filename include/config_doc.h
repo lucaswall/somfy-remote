@@ -21,7 +21,8 @@
 //
 //   { "v": 1, "epoch": 7, "writer": "ui", "hash": 3735928559,
 //     "base": "0x000000",
-//     "remotes": [ { "i": 0, "addr": "0x000000", "enabled": true, "operational": true } ] }
+//     "remotes": [ { "i": 0, "addr": "0x000000", "enabled": true, "operational": true,
+//                    "travel": 22 } ] }
 
 namespace cfg {
 
@@ -33,7 +34,11 @@ struct RemoteConfig {
   uint32_t address;   // rs::ADDR_NONE means "derive from base + index"
   bool enabled;
   bool operational;
+  uint8_t travelSeconds;   // end to end; 0 means the firmware default
 };
+
+// One byte in the store, so the page must refuse what will not survive the round trip.
+static const uint8_t MAX_TRAVEL_SECONDS = 255;
 
 struct ConfigDoc {
   uint8_t version = SCHEMA_VERSION;
@@ -90,11 +95,12 @@ inline uint32_t contentHash(const ConfigDoc &doc) {
   }
   for (uint8_t i = 0; i < doc.entries; i++) {
     const RemoteConfig &r = doc.remotes[i];
-    const uint8_t f[6] = {r.index,
+    const uint8_t f[7] = {r.index,
                           (uint8_t)(r.address), (uint8_t)(r.address >> 8),
                           (uint8_t)(r.address >> 16), (uint8_t)(r.address >> 24),
-                          (uint8_t)((r.enabled ? 1 : 0) | (r.operational ? 2 : 0))};
-    for (uint8_t k = 0; k < 6; k++) {
+                          (uint8_t)((r.enabled ? 1 : 0) | (r.operational ? 2 : 0)),
+                          r.travelSeconds};
+    for (uint8_t k = 0; k < 7; k++) {
       h = (h ^ f[k]) * 16777619u;
     }
   }
@@ -165,6 +171,8 @@ inline bool parse(const char *json, size_t len, ConfigDoc *out) {
     slot.address = parseHex(r["addr"] | (const char *)nullptr, rs::ADDR_NONE);
     slot.enabled = r["enabled"] | true;
     slot.operational = r["operational"] | true;
+    const unsigned travel = r["travel"] | 0u;
+    slot.travelSeconds = travel > MAX_TRAVEL_SECONDS ? 0 : (uint8_t)travel;
   }
 
   *out = parsed;
@@ -191,6 +199,9 @@ inline size_t serialise(const ConfigDoc &doc, char *out, size_t cap) {
     }
     o["enabled"] = doc.remotes[i].enabled;
     o["operational"] = doc.remotes[i].operational;
+    if (doc.remotes[i].travelSeconds > 0) {
+      o["travel"] = doc.remotes[i].travelSeconds;
+    }
   }
   // serializeJson() truncates silently when the buffer is short, and a truncated config
   // document is a parse failure at the other end rather than a visible fault here.
@@ -252,7 +263,8 @@ inline void project(const ConfigDoc &doc, rs::LiveMap *map) {
     map->put(rs::NS_ADDR, i, r->address);
     map->put(rs::NS_FLAGS, i,
              (uint32_t)((r->enabled ? rs::FLAG_ENABLED : 0) |
-                        (r->operational ? rs::FLAG_OPERATIONAL : 0)));
+                        (r->operational ? rs::FLAG_OPERATIONAL : 0) |
+                        ((uint32_t)r->travelSeconds << rs::TRAVEL_SECONDS_SHIFT)));
   }
 }
 
@@ -270,6 +282,8 @@ inline void fromStore(const rs::LiveMap &map, ConfigDoc *out) {
     const uint32_t flags = map.valueOr(rs::NS_FLAGS, i, 0);
     slot.enabled = (flags & rs::FLAG_ENABLED) != 0;
     slot.operational = (flags & rs::FLAG_OPERATIONAL) != 0;
+    slot.travelSeconds =
+        (uint8_t)((flags >> rs::TRAVEL_SECONDS_SHIFT) & rs::TRAVEL_SECONDS_MASK);
   }
   doc.hash = contentHash(doc);
   *out = doc;

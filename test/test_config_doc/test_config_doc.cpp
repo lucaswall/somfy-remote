@@ -176,6 +176,66 @@ void serialise_reports_truncation_rather_than_emitting_half_a_document() {
   TEST_ASSERT_EQUAL_size_t(0, n);
 }
 
+// --- travel time --------------------------------------------------------------------------
+
+// It rides in the flags record rather than a namespace of its own, so the round trip through
+// the store is the thing worth pinning: a shift collision would silently reset every shutter
+// to the default travel time and nothing else would notice.
+static void travel_time_survives_the_store(void) {
+  cfg::ConfigDoc doc;
+  doc.base = 0x000000;
+  doc.entries = 2;
+  doc.remotes[0] = {0, rs::ADDR_NONE, true, true, 22};
+  doc.remotes[1] = {1, rs::ADDR_NONE, true, false, 255};
+
+  rs::LiveMap map;
+  cfg::project(doc, &map);
+  map.put(rs::NS_SCALAR, rs::SCALAR_REMOTE_COUNT, 2);
+
+  cfg::ConfigDoc back;
+  cfg::fromStore(map, &back);
+  TEST_ASSERT_EQUAL_UINT8(22, back.remotes[0].travelSeconds);
+  TEST_ASSERT_EQUAL_UINT8(255, back.remotes[1].travelSeconds);
+  TEST_ASSERT_TRUE(back.remotes[0].enabled);
+  TEST_ASSERT_TRUE(back.remotes[0].operational);
+  TEST_ASSERT_FALSE(back.remotes[1].operational);
+}
+
+static void travel_time_round_trips_through_json(void) {
+  cfg::ConfigDoc doc;
+  doc.entries = 1;
+  doc.remotes[0] = {3, rs::ADDR_NONE, true, true, 19};
+  char json[512];
+  const size_t n = cfg::serialise(doc, json, sizeof(json));
+  TEST_ASSERT_GREATER_THAN_size_t(0, n);
+
+  cfg::ConfigDoc back;
+  TEST_ASSERT_TRUE(cfg::parse(json, n, &back));
+  TEST_ASSERT_EQUAL_UINT8(19, back.remotes[0].travelSeconds);
+}
+
+// A document written before travel times existed must still parse, and must not claim its
+// shutters travel in no time at all.
+static void a_document_without_a_travel_time_uses_the_default(void) {
+  cfg::ConfigDoc doc;
+  const char json[] =
+      "{\"v\":1,\"epoch\":1,\"base\":\"0x000000\","
+      "\"remotes\":[{\"i\":0,\"enabled\":true,\"operational\":true}]}";
+  TEST_ASSERT_TRUE(cfg::parse(json, strlen(json), &doc));
+  TEST_ASSERT_EQUAL_UINT8(0, doc.remotes[0].travelSeconds);
+}
+
+// Changing it is a configuration change like any other, or two boards would disagree about
+// the document while both believing they held the same one.
+static void travel_time_changes_the_content_hash(void) {
+  cfg::ConfigDoc a;
+  a.entries = 1;
+  a.remotes[0] = {0, rs::ADDR_NONE, true, true, 22};
+  cfg::ConfigDoc b = a;
+  b.remotes[0].travelSeconds = 30;
+  TEST_ASSERT_NOT_EQUAL(cfg::contentHash(a), cfg::contentHash(b));
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(parses_a_document);
@@ -193,5 +253,9 @@ int main() {
   RUN_TEST(reads_back_out_of_the_store);
   RUN_TEST(worst_case_document_at_thirty_remotes_is_measured_not_assumed);
   RUN_TEST(serialise_reports_truncation_rather_than_emitting_half_a_document);
+  RUN_TEST(travel_time_survives_the_store);
+  RUN_TEST(travel_time_round_trips_through_json);
+  RUN_TEST(a_document_without_a_travel_time_uses_the_default);
+  RUN_TEST(travel_time_changes_the_content_hash);
   return UNITY_END();
 }

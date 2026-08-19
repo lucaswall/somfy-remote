@@ -69,6 +69,12 @@ inline void topicCoverState(char *out, size_t len, const char *deviceId, uint8_t
   snprintf(out, len, "%s/remote%u/state", deviceId, (unsigned)remote);
 }
 
+// "<deviceId>/remote<n>/position" — 0 shut to 100 open, retained. Finer than the state
+// topic, which calls a shutter stopped anywhere short of shut simply `open`.
+inline void topicCoverPosition(char *out, size_t len, const char *deviceId, uint8_t remote) {
+  snprintf(out, len, "%s/remote%u/position", deviceId, (unsigned)remote);
+}
+
 // "<deviceId>/remote<n>/my_state" — the My switch reporting itself back off.
 inline void topicMyState(char *out, size_t len, const char *deviceId, uint8_t remote) {
   snprintf(out, len, "%s/remote%u/my_state", deviceId, (unsigned)remote);

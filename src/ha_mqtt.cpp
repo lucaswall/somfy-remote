@@ -50,6 +50,7 @@ static const uint16_t MQTT_BUFFER = 2048;
 // Diagnostics are retained, so a slow cadence still leaves Home Assistant with a current
 // value; this only decides how quickly a developing fault becomes visible.
 static const uint32_t HEALTH_PUBLISH_MS = 60000;
+static const uint32_t POSITION_PUBLISH_MS = 1000;
 
 // snprintf truncates silently, and two truncated topics are one topic: remote 2 and
 // remote 21 would share a command topic and move together. The longest this firmware
@@ -81,6 +82,16 @@ void HaMqtt::loadConfigFromStore() {
   }
   cfg::fromStore(_store.map(), &_config);
   _haveConfig = true;
+  applyTravelTimes();
+}
+
+// The travel times live in the configuration document and the estimate lives in RAM, so
+// every path that settles which document wins has to hand them over.
+void HaMqtt::applyTravelTimes() {
+  for (uint8_t i = 0; i < rs::MAX_REMOTES; i++) {
+    const cfg::RemoteConfig *r = _config.find(i);
+    _remotes.setTravelSeconds(i, r == nullptr ? 0 : r->travelSeconds);
+  }
 }
 
 void HaMqtt::loop() {
@@ -152,10 +163,19 @@ void HaMqtt::loop() {
 
   // Publish on any change, whoever caused it — a command from Home Assistant or a press
   // on the web page.
+  // A shutter in motion is worth a percentage a second: fewer and Home Assistant's slider
+  // steps rather than travels, more and twelve covers moving at once is a publish every
+  // few milliseconds.
+  const bool tickPosition = elapsed(millis(), _lastPositionAt, POSITION_PUBLISH_MS);
+  if (tickPosition) {
+    _lastPositionAt = millis();
+  }
   for (uint8_t i = 0; i < _remotes.count(); i++) {
     if (_remotes.state(i).version() != _publishedVersion[i]) {
       _publishedVersion[i] = _remotes.state(i).version();
       publishState(i);
+    } else if (tickPosition && _remotes.state(i).travelling()) {
+      publishPosition(i);
     }
     publishCounter(i);
   }
@@ -303,6 +323,8 @@ bool HaMqtt::connect() {
   // while Home Assistant kept it. Reading it back is the same trick as the counters: the
   // durable copy lives off the board.
   snprintf(topic, sizeof(topic), "%s/+/state", MQTT_DEVICE_ID);
+  _mqtt.subscribe(topic);
+  snprintf(topic, sizeof(topic), "%s/+/position", MQTT_DEVICE_ID);
   _mqtt.subscribe(topic);
 
   _haveStaged = false;
@@ -455,6 +477,7 @@ void HaMqtt::reconcileConfig() {
       if (ok && _store.put(rs::NS_SCALAR, rs::SCALAR_CONFIG_EPOCH, _staged.epoch)) {
         _config = _staged;
         _haveConfig = true;
+        applyTravelTimes();
         logLine("mqtt      : config epoch %lu adopted from %s, %u remotes",
                 (unsigned long)_config.epoch, _config.writer, _config.remoteCount());
       } else {
@@ -524,6 +547,7 @@ bool HaMqtt::applyConfig(const cfg::ConfigDoc &doc, const char *writer) {
 
   _config = next;
   _haveConfig = true;
+  applyTravelTimes();
   publishConfigDocument();
   for (uint8_t i = 0; i < _remotes.count(); i++) {
     if (_remotes.enabled(i)) {
@@ -561,9 +585,11 @@ void HaMqtt::publishDiscoveryRemoval(uint8_t remote) {
 
 void HaMqtt::publishDiscovery(uint8_t remote) {
   char availability[TOPIC_LEN], command[TOPIC_LEN], state[TOPIC_LEN], myState[TOPIC_LEN];
+  char position[TOPIC_LEN];
   topicAvailability(availability, sizeof(availability), MQTT_DEVICE_ID);
   topicCommand(command, sizeof(command), MQTT_DEVICE_ID, remote);
   topicCoverState(state, sizeof(state), MQTT_DEVICE_ID, remote);
+  topicCoverPosition(position, sizeof(position), MQTT_DEVICE_ID, remote);
   topicMyState(myState, sizeof(myState), MQTT_DEVICE_ID, remote);
 
   char identifier[OBJECT_ID_LEN], name[DEVICE_NAME_LEN], url[48];
@@ -641,8 +667,14 @@ void HaMqtt::publishDiscovery(uint8_t remote) {
         // Without this Home Assistant treats them as generic covers: generic icon, generic
         // open/closed vocabulary. They are shutters.
         doc["device_class"] = "shutter";
+        // Estimated from the travel time, not measured. Display only: there is no
+        // set_position topic because there is no RTS command that goes to a position.
+        doc["position_topic"] = position;
         // RTS is one-way. Home Assistant shows both buttons at all times rather than
-        // hiding the one it thinks is redundant, because what it thinks may be wrong.
+        // hiding the one it thinks is redundant, because what it thinks may be wrong — an
+        // estimate that has drifted must never leave somebody unable to press the button
+        // that would fix it. The price is that an optimistic cover with a position topic
+        // snaps to 100 or 0 on the command and is corrected a second later.
         //
         // `optimistic` is the documented key. Do not reach for `assumed_state`: that is
         // what the attribute is called on the entity, but it is not in the MQTT cover
@@ -797,16 +829,32 @@ void HaMqtt::publishHealth() {
   _mqtt.publish(topic, payload, true);
 }
 
+// Separate from publishState() because it has a rhythm of its own: once per settled state,
+// then once a second for as long as the shutter is moving.
+void HaMqtt::publishPosition(uint8_t remote) {
+  const RemoteState &state = _remotes.state(remote);
+  const int16_t pct = state.percent(millis());
+  if (pct < 0) {
+    return;
+  }
+  char topic[TOPIC_LEN], payload[8];
+  topicCoverPosition(topic, sizeof(topic), MQTT_DEVICE_ID, remote);
+  snprintf(payload, sizeof(payload), "%d", pct);
+  _mqtt.publish(topic, payload, !state.travelling());
+}
+
 void HaMqtt::publishState(uint8_t remote) {
   const RemoteState &state = _remotes.state(remote);
   char topic[TOPIC_LEN];
 
   // Retained, so a Home Assistant restart does not leave every cover blank until somebody
-  // presses something.
+  // presses something — but only once the shutter has arrived. A retained `opening` would
+  // outlive the travel and be restored, on the next boot, as a shutter that never lands.
   if (state.position() != COVER_UNKNOWN) {
     topicCoverState(topic, sizeof(topic), MQTT_DEVICE_ID, remote);
-    _mqtt.publish(topic, coverPositionName(state.position()), true);
+    _mqtt.publish(topic, coverPositionName(state.position()), !state.travelling());
   }
+  publishPosition(remote);
 
   // The My switch is momentary: it reports itself off after every press, including the
   // presses it did not cause.
@@ -856,6 +904,18 @@ void HaMqtt::onMessage(const char *topic, const uint8_t *payload, unsigned int l
           _remotes.restoreState(i, COVER_OPEN);
         } else if (length == 6 && memcmp(payload, "closed", 6) == 0) {
           _remotes.restoreState(i, COVER_CLOSED);
+        }
+        return;
+      }
+      for (uint8_t i = 0; i < rs::MAX_REMOTES; i++) {
+        topicCoverPosition(expectedState, sizeof(expectedState), MQTT_DEVICE_ID, i);
+        if (strcmp(topic, expectedState) != 0) {
+          continue;
+        }
+        char text[5] = {0};
+        if (length > 0 && length < sizeof(text)) {
+          memcpy(text, payload, length);
+          _remotes.restorePercent(i, (int16_t)atoi(text));
         }
         return;
       }

@@ -58,6 +58,8 @@ class HaMqtt {
   void loadConfigFromStore();
   void publishDiscovery(uint8_t remote);
   void publishState(uint8_t remote);
+  void publishPosition(uint8_t remote);
+  void applyTravelTimes();
   void publishCounter(uint8_t remote, bool force = false);
   void publishBridgeDiscovery();
   bool publishControlDiscovery(const ctl::Control &control);
@@ -96,6 +98,7 @@ class HaMqtt {
   uint32_t _retryMs = 5000;
   uint32_t _reconcileStart = 0;
   uint32_t _lastHealth = 0;
+  uint32_t _lastPositionAt = 0;
   bool _attempted = false;
   bool _reconciling = false;
   bool _loaded = false;

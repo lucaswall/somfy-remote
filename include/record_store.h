@@ -51,6 +51,12 @@ static const uint32_t ADDR_NONE = 0xFFFFFFFFu;
 static const uint32_t FLAG_ENABLED = 1u << 0;
 static const uint32_t FLAG_OPERATIONAL = 1u << 1;
 
+// Travel time in seconds, packed into the same record rather than given a namespace of its
+// own. A namespace costs 30 more live entries, and the LiveMap is built on the stack during
+// config reconciliation where the ESP8266 has 4 KB to spend. Zero means unset.
+static const uint8_t TRAVEL_SECONDS_SHIFT = 8;
+static const uint32_t TRAVEL_SECONDS_MASK = 0xFFu;
+
 // 30 remotes x 3 per-remote namespaces + 4 scalars = 94 live records at the maximum
 // configuration, plus a little headroom for namespaces a newer firmware may have written
 // and this one must carry forward rather than destroy.

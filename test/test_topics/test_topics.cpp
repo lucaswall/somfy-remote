@@ -23,6 +23,11 @@ static void topics_match_the_deployed_firmware(void) {
   topicMyState(buffer, sizeof(buffer), ID, 3);
   TEST_ASSERT_EQUAL_STRING("wemos_somfy_remote/remote3/my_state", buffer);
 
+  // New, so not inherited from the 2023 sketch — but pinned for the same reason as the
+  // rest: an entity keyed on it exists the moment this ships.
+  topicCoverPosition(buffer, sizeof(buffer), ID, 3);
+  TEST_ASSERT_EQUAL_STRING("wemos_somfy_remote/remote3/position", buffer);
+
   topicCommand(buffer, sizeof(buffer), ID, 11);
   TEST_ASSERT_EQUAL_STRING("wemos_somfy_remote/remote11/button", buffer);
 }

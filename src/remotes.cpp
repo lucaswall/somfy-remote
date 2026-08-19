@@ -1,5 +1,7 @@
 #include "remotes.h"
 
+#include <Arduino.h>
+
 #include "log.h"
 
 void Remotes::begin() {
@@ -36,7 +38,7 @@ bool Remotes::observe(uint8_t remote, uint8_t command) {
   if (remote >= count() || !enabled(remote) || !operational(remote)) {
     return false;
   }
-  _states[remote].observe(command);
+  _states[remote].observe(command, millis());
   return true;
 }
 
@@ -59,6 +61,13 @@ bool Remotes::adoptCounter(uint8_t remote, uint32_t value) {
 }
 
 void Remotes::loop() {
+  // Before the early returns below: a shutter still travelling has to arrive whatever the
+  // radio and the queue are doing.
+  const uint32_t now = millis();
+  for (uint8_t i = 0; i < count(); i++) {
+    _states[i].tick(now);
+  }
+
   // Leave commands queued while the radio is known down, or while reconciliation has not
   // decided whose counters win, rather than consuming them into nothing: a shutter that
   // moves late is better than one that never moves and reports that it did.
@@ -95,7 +104,7 @@ void Remotes::loop() {
           somfyCommandName(next.command), rs::transmitCode(code));
 
   if (_radio.send(next.command, addressOf(next.remote), rs::transmitCode(code))) {
-    _states[next.remote].record(next.command);
+    _states[next.remote].record(next.command, millis());
   } else {
     // Dropped, not re-queued: every retry would take a fresh rolling code, and a counter
     // run far past the last one the motor accepted costs a walk to every shutter. Losing

@@ -48,6 +48,18 @@ class Remotes {
       _states[remote].restore(position);
     }
   }
+  void restorePercent(uint8_t remote, int16_t pct) {
+    if (remote < rs::MAX_REMOTES) {
+      _states[remote].restorePercent(pct);
+    }
+  }
+
+  // Seconds, as the configuration document carries it; 0 restores the firmware default.
+  void setTravelSeconds(uint8_t remote, uint8_t seconds) {
+    if (remote < rs::MAX_REMOTES) {
+      _states[remote].setTravelMs(seconds > 0 ? (uint32_t)seconds * 1000 : COVER_TRAVEL_MS);
+    }
+  }
 
   // Applies a press somebody else made, overheard on the air. False means it was refused,
   // and the reasons are deliberately the send path's minus the rolling code: an index that

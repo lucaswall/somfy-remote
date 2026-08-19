@@ -404,12 +404,14 @@ void WebUi::handleState() {
   // index, which is what the page did before names existed.
   for (uint8_t i = 0; i < _remotes.count(); i++) {
     const RemoteState &state = _remotes.state(i);
-    const char *name = _mqtt.nameOf(i);
+    snprintf(chunk, sizeof(chunk), "%s{\"n\":%u,\"name\":\"", i == 0 ? "" : ",", i);
+    appendJsonString(chunk, sizeof(chunk), _mqtt.nameOf(i));
+    out.add(chunk);
     snprintf(chunk, sizeof(chunk),
-             "%s{\"n\":%u,\"name\":\"%s\",\"position\":\"%s\",\"code\":%lu,"
+             "\",\"position\":\"%s\",\"pct\":%d,\"travel\":%u,\"code\":%lu,"
              "\"version\":%lu,\"enabled\":%s,\"operational\":%s,\"ready\":%s}",
-             i == 0 ? "" : ",", i, name[0] != '\0' ? name : "",
-             coverPositionName(state.position()), (unsigned long)_remotes.counter(i),
+             coverPositionName(state.position()), state.percent(millis()),
+             (unsigned)(state.travelMs() / 1000), (unsigned long)_remotes.counter(i),
              (unsigned long)state.version(), _remotes.enabled(i) ? "true" : "false",
              _remotes.operational(i) ? "true" : "false",
              _remotes.transmittable(i) ? "true" : "false");
@@ -509,6 +511,20 @@ void WebUi::handleRemoteFlags() {
   if (_server.hasArg("enabled")) {
     entry->enabled = _server.arg("enabled") == "1";
   }
+  if (_server.hasArg("travel")) {
+    const String seconds = _server.arg("travel");
+    char *tail = nullptr;
+    const long value = strtol(seconds.c_str(), &tail, 10);
+    if (seconds.length() == 0 || *tail != '\0' || value < 1 ||
+        value > cfg::MAX_TRAVEL_SECONDS) {
+      char why[72];
+      snprintf(why, sizeof(why), "travel time must be 1 to %u seconds\n",
+               cfg::MAX_TRAVEL_SECONDS);
+      _server.send(400, "text/plain", why);
+      return;
+    }
+    entry->travelSeconds = (uint8_t)value;
+  }
 
   if (!_mqtt.applyConfig(next, "ui")) {
     _server.send(500, "text/plain", "could not persist configuration\n");
@@ -520,10 +536,12 @@ void WebUi::handleRemoteFlags() {
     _mqtt.publishDiscoveryRemoval((uint8_t)remote);
   }
 
-  char body[96];
-  snprintf(body, sizeof(body), "remote %ld: %s, %s\n", remote,
+  char body[112];
+  snprintf(body, sizeof(body), "remote %ld: %s, %s, %us travel\n", remote,
            entry->enabled ? "in Home Assistant" : "removed",
-           entry->operational ? "operational" : "not operational");
+           entry->operational ? "operational" : "not operational",
+           entry->travelSeconds > 0 ? entry->travelSeconds
+                                    : (unsigned)(COVER_TRAVEL_MS / 1000));
   _server.send(200, "text/plain", body);
 }
 
@@ -703,8 +721,10 @@ void WebUi::handleStatus() {
   // Always, not only when armed: a muted receiver and a quiet house look identical.
   const Receiver::Stats rx = _receiver.stats();
   snprintf(line, sizeof(line),
-           "receiver: %s  %lu edges/s  %lu frames  %lu presses  %u known\n",
-           _receiver.listening() ? "listening" : "MUTED",
+           "receiver: %s  marcstate 0x%02X%s  %lu edges/s  %lu frames  %lu presses  "
+           "%u known\n",
+           _receiver.listening() ? "listening" : "MUTED", rx.marcState,
+           rx.marcState == CC1101_STATE_RX ? "" : " NOT RX",
            (unsigned long)_receiver.edgesPerSecond(), (unsigned long)rx.frames,
            (unsigned long)rx.presses, _mqtt.controls().count());
   out.add(line);
