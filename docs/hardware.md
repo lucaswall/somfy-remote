@@ -6,9 +6,10 @@ ESP8266 with a CH340 USB-serial bridge, micro-USB, 4 MB flash. PlatformIO board 
 `d1_mini`.
 
 **The mini is not the D1 R1.** Their pin maps differ, and building with `board = d1`
-succeeds, uploads, and then misbehaves silently because every `Dn` constant points at a
-different GPIO — on the R1, `D1` is GPIO1, the UART's transmit pin. The boot banner in
-`src/main.cpp` prints a `pinmap` line specifically to catch this.
+succeeds and uploads: every `Dn` constant then points at a different GPIO — on the R1, `D1`
+is GPIO1, the UART's transmit pin, and `D8` is GPIO0. Nothing in this firmware uses a `Dn`
+constant for a real pin, which is what keeps a wrong board id from moving the radio; the
+boot banner in `src/main.cpp` prints a `pinmap` line so it is visible anyway.
 
 ```
 D0=GPIO16  D1=GPIO5   D2=GPIO4   D3=GPIO0   D4=GPIO2

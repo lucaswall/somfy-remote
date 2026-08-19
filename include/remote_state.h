@@ -17,8 +17,8 @@ enum CoverPosition {
 
 class RemoteState {
  public:
-  // Called once per command actually transmitted, whoever asked for it — Home Assistant,
-  // the web UI, or the serial console — so every path lands on the same state.
+  // Called once per command actually transmitted, whoever asked for it — Home Assistant
+  // or the web UI — so every path lands on the same state.
   void record(SomfyCommand command) {
     _last = command;
     _version++;

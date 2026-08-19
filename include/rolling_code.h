@@ -22,6 +22,8 @@ inline uint16_t rollingCodeAddress(uint8_t remote) {
   return (uint16_t)(remote * ROLLING_CODE_BYTES);
 }
 
-// The stored value is the code to send next, not the last one sent, so a board that
-// reboots between the read and the send repeats a code rather than skipping one.
+// The stored value is the code to send next, not the last one sent: remotes.cpp writes
+// the successor before transmitting, so a board that reboots between the write and the
+// send skips a code rather than repeating one. A skipped code the motor accepts; a
+// repeated one it ignores.
 inline uint16_t rollingCodeNext(uint16_t code) { return (uint16_t)(code + 1); }

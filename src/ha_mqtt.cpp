@@ -25,6 +25,12 @@ static const uint32_t CLIENT_TIMEOUT_MS = 2000;
 // of a realistic length. The margin is for a longer one.
 static const size_t PAYLOAD_LEN = 768;
 
+// snprintf truncates silently, and two truncated topics are one topic: remote 2 and
+// remote 21 would share a command topic and move together. The longest this firmware
+// builds is "<id>/remote29/my_state", so fail the build rather than the installation.
+static_assert(sizeof(MQTT_DEVICE_ID) + sizeof("/remote29/my_state") - 1 <= TOPIC_LEN,
+              "MQTT_DEVICE_ID is too long: see TOPIC_LEN in include/topics.h");
+
 void HaMqtt::loop() {
   if (WiFi.status() != WL_CONNECTED) {
     return;
@@ -41,7 +47,7 @@ void HaMqtt::loop() {
     // otherwise return with the retry window already expired and spin.
     _lastAttempt = millis();
     if (!ok) {
-      _retryMs = _retryMs >= RETRY_MAX_MS ? RETRY_MAX_MS : _retryMs * 2;
+      _retryMs = _retryMs * 2 >= RETRY_MAX_MS ? RETRY_MAX_MS : _retryMs * 2;
       return;
     }
     _retryMs = RETRY_MIN_MS;
@@ -49,8 +55,8 @@ void HaMqtt::loop() {
 
   _mqtt.loop();
 
-  // Publish on any change, whoever caused it — a command from Home Assistant, a press on
-  // the web page, or a line typed at the serial console.
+  // Publish on any change, whoever caused it — a command from Home Assistant or a press
+  // on the web page.
   for (uint8_t i = 0; i < _remotes.count(); i++) {
     if (_remotes.state(i).version() != _publishedVersion[i]) {
       _publishedVersion[i] = _remotes.state(i).version();
@@ -91,9 +97,12 @@ bool HaMqtt::connect() {
 
   // Retained, so Home Assistant recreates the entities after its own restart without
   // waiting for us to reconnect — and republished on every reconnect, because a broker
-  // that lost its retained set is exactly what a reconnect looks like from here.
+  // that lost its retained set is exactly what a reconnect looks like from here. State
+  // goes with it for the same reason: republishing the config alone brings the entities
+  // back blank, which is the failure the retained state topic exists to prevent.
   for (uint8_t i = 0; i < _remotes.count(); i++) {
     publishDiscovery(i);
+    publishState(i);
   }
 
   logLine("mqtt      : connected to %s as %s, %u remotes announced", MQTT_HOST, MQTT_USER,
@@ -154,7 +163,6 @@ void HaMqtt::publishDiscovery(uint8_t remote) {
         doc["payload_off"] = "My";
         doc["state_on"] = "on";
         doc["state_off"] = "off";
-        doc["assumed_state"] = false;
         break;
       default:
         // The cover, and the primary entity of the device: a null name means it inherits
@@ -169,7 +177,10 @@ void HaMqtt::publishDiscovery(uint8_t remote) {
         doc["payload_stop"] = "My";
         // RTS is one-way. Home Assistant shows both buttons at all times rather than
         // hiding the one it thinks is redundant, because what it thinks may be wrong.
-        doc["assumed_state"] = true;
+        // The key is `optimistic`: MQTT discovery drops anything outside its schema, and
+        // `assumed_state` — which is what the attribute is called on the entity — is not
+        // in it, so asking for it by that name asks for nothing.
+        doc["optimistic"] = true;
         break;
     }
 

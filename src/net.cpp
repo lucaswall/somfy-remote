@@ -64,10 +64,9 @@ void Net::loop() {
       logLine("wifi      : up, ip %s rssi %d", WiFi.localIP().toString().c_str(),
            WiFi.RSSI());
     } else {
-      // Re-arm on the next reconnect: ArduinoOTA.begin() also starts mDNS, and neither
-      // survives an association drop. Without this, a long AP outage leaves a sealed
-      // board unreachable over the air until someone power-cycles it.
-      _otaReady = false;
+      // Nothing to tear down: ArduinoOTA.begin() returns early once initialised and its
+      // listener is bound to IP_ADDR_ANY, and MDNSResponder installs an interface-status
+      // callback that restarts itself. Both come back with the association.
       logError("wifi      : lost");
     }
   }

@@ -29,6 +29,11 @@ void setup() {
                 PIN_CSN, PIN_DATA);
 
   const bool started = radio.begin(SOMFY_MHZ);
+  // The chip keys its PA off this pin in asynchronous mode, so it is driven low before
+  // the transmit check below — floating, it would put an unmodulated carrier on the air.
+  // Only after begin(), which is what stops the chip driving the same wire.
+  pinMode(PIN_DATA, OUTPUT);
+  digitalWrite(PIN_DATA, LOW);
   const uint8_t partnum = radio.readStatus(CC1101_PARTNUM);
   const uint8_t version = radio.readStatus(CC1101_VERSION);
 

@@ -56,7 +56,7 @@ buttons at all times rather than hiding the one it believes is redundant.
 |---|---|
 | Wemos D1 mini (ESP8266) | PlatformIO board id `d1_mini`. Any ESP8266 works; the pin map here is mini-specific |
 | CC1101 433 MHz module | E07-M1101D or equivalent. 3.3 V only. Wiring in [`docs/hardware.md`](docs/hardware.md) |
-| 6 dupont wires | GDO0, CSN, SCK, MOSI, MISO, VCC, GND. GDO2 unused |
+| 7 dupont wires | GDO0, CSN, SCK, MOSI, MISO, VCC, GND. GDO2 unused |
 | A 433 MHz antenna | Fit it before powering up |
 
 ## Quick start

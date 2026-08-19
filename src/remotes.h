@@ -21,9 +21,9 @@ class Remotes {
 
   void begin();
 
-  // False means there is no such remote. Queued rather than sent: a press takes most of a
-  // second on the air, and the caller is usually an MQTT callback.
-  bool queue(uint8_t remote, SomfyCommand command);
+  // Queued rather than sent: a press takes most of a second on the air, and the caller is
+  // usually an MQTT callback. An unknown remote is logged as a fault and dropped here.
+  void queue(uint8_t remote, SomfyCommand command);
 
   // Sends at most one queued command, so the loop keeps serving MQTT and OTA between
   // presses.

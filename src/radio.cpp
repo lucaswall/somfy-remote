@@ -10,10 +10,17 @@
 static const float SOMFY_MHZ = 433.42f;
 
 bool SomfyRadio::begin() {
-  pinMode(_dataPin, OUTPUT);
-  digitalWrite(_dataPin, LOW);   // an idle high would key the transmitter continuously
+  // Left as an input across begin(): SRES restores IOCFG0 to its default, which is a
+  // divided crystal clock driven out of GDO0, and the corrective write comes several
+  // SPI transactions later. Driving the pin before then puts two push-pull outputs on
+  // one wire for the length of the reset.
+  pinMode(_dataPin, INPUT);
 
   _ready = _cc1101.begin(SOMFY_MHZ);
+  if (_ready) {
+    pinMode(_dataPin, OUTPUT);
+    digitalWrite(_dataPin, LOW);   // an idle high would key the transmitter continuously
+  }
   return _ready;
 }
 

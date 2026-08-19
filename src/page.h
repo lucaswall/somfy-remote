@@ -52,7 +52,7 @@ footer a{color:var(--accent);text-decoration:none}
 </style></head><body><main>
 <h1>somfy-remote</h1>
 
-<div class="card" id="statusCard">
+<div class="card">
   <div class="grid">
     <div><span>Host</span><b id="host">—</b></div>
     <div><span>IP</span><b id="ip">—</b></div>

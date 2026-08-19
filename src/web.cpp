@@ -2,6 +2,7 @@
 
 #include <ESP8266WiFi.h>
 #include <ESP8266mDNS.h>
+#include <stdlib.h>
 
 #include "log.h"
 #include "page.h"
@@ -70,7 +71,7 @@ void WebUi::handleState() {
 }
 
 void WebUi::handleSend() {
-  const long remote = _server.arg("remote").toInt();
+  const String number = _server.arg("remote");
   const String button = _server.arg("command");
 
   SomfyCommand command;
@@ -78,7 +79,13 @@ void WebUi::handleSend() {
     _server.send(400, "text/plain", "unknown command\n");
     return;
   }
-  if (remote < 0 || remote >= _remotes.count()) {
+
+  // Parsed strictly, not with toInt(): that reads an absent or non-numeric argument as 0,
+  // so a request naming no remote at all would move shutter 0. The command half is already
+  // length-exact for the same reason — see include/somfy_frame.h.
+  char *end = nullptr;
+  const long remote = strtol(number.c_str(), &end, 10);
+  if (number.length() == 0 || *end != '\0' || remote < 0 || remote >= _remotes.count()) {
     _server.send(404, "text/plain", "no such remote\n");
     return;
   }
@@ -89,33 +96,25 @@ void WebUi::handleSend() {
 
 // Streamed a line at a time: the two rings are over 10 KB together and assembling one into
 // a single response would need that much again from a heap with about 30 KB free.
-void WebUi::handleLog() {
-  const LogBuffer &log = logBuffer();
-  _server.setContentLength(CONTENT_LENGTH_UNKNOWN);
-  _server.sendHeader("Cache-Control", "no-store");
-  _server.send(200, "text/plain", "");
+// Templated on the ring's depth, which is the only thing that differs between the two.
+template <uint8_t Lines>
+static void sendRing(ESP8266WebServer &server, const LogRing<Lines> &ring,
+                     const char *whenEmpty) {
+  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "text/plain", ring.count() == 0 ? whenEmpty : "");
   char line[LOG_LINE_LEN + 24];
-  for (uint8_t i = 0; i < log.count(); i++) {
-    log.render(i, line, sizeof(line));
-    _server.sendContent(line);
-    _server.sendContent("\n");
+  for (uint8_t i = 0; i < ring.count(); i++) {
+    ring.render(i, line, sizeof(line));
+    server.sendContent(line);
+    server.sendContent("\n");
   }
-  _server.sendContent("");
+  server.sendContent("");
 }
 
-void WebUi::handleErrors() {
-  const ErrorBuffer &errors = errorBuffer();
-  _server.setContentLength(CONTENT_LENGTH_UNKNOWN);
-  _server.sendHeader("Cache-Control", "no-store");
-  _server.send(200, "text/plain", errors.count() == 0 ? "no faults recorded\n" : "");
-  char line[LOG_LINE_LEN + 24];
-  for (uint8_t i = 0; i < errors.count(); i++) {
-    errors.render(i, line, sizeof(line));
-    _server.sendContent(line);
-    _server.sendContent("\n");
-  }
-  _server.sendContent("");
-}
+void WebUi::handleLog() { sendRing(_server, logBuffer(), ""); }
+
+void WebUi::handleErrors() { sendRing(_server, errorBuffer(), "no faults recorded\n"); }
 
 // A snapshot, computed now rather than remembered. The boot banner scrolls out of the log
 // within hours; nothing here can drift out, because nothing here is stored.

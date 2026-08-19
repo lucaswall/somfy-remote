@@ -105,8 +105,9 @@ Both files say so at the top. Neither is a design choice that is still open.
 Wemos **D1 mini** (ESP8266, 4 MB flash) + CC1101 433 MHz transceiver.
 
 PlatformIO board id is `d1_mini`. **NOT `d1`** — that is the R1, an Uno-shaped board with a
-different pin map; it compiles and uploads cleanly while every pin number is silently
-wrong.
+different pin map; it compiles and uploads cleanly while every `Dn` macro means a different
+GPIO. That is why every pin here is written as a GPIO number and why the boot banner prints
+D1 and D8: nothing else would show which board it was built for.
 
 ### Pin map — the D1 mini is not the R1
 

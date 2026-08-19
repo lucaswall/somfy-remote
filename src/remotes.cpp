@@ -18,19 +18,18 @@ void Remotes::begin() {
           rollingCode((uint8_t)(_count - 1)));
 }
 
-bool Remotes::queue(uint8_t remote, SomfyCommand command) {
+void Remotes::queue(uint8_t remote, SomfyCommand command) {
   if (remote >= _count) {
     logError("remotes   : no remote %u, have %u", remote, _count);
-    return false;
+    return;
   }
   if (!_queue.push(remote, command)) {
     logError("remotes   : queue full, oldest command dropped");
   }
-  return true;
 }
 
 void Remotes::loop() {
-  // Leave commands queued while the radio is down rather than consuming them into
+  // Leave commands queued while the radio is known down rather than consuming them into
   // nothing: a shutter that moves late is better than one that never moves and reports
   // that it did.
   if (!_radio.ready() || _queue.empty()) {
@@ -48,6 +47,13 @@ void Remotes::loop() {
 
   if (_radio.send(next.command, _base + next.remote, code)) {
     _states[next.remote].record(next.command);
+  } else {
+    // Dropped, not re-queued: every retry would take a fresh rolling code, and a counter
+    // run far past the last one the motor accepted costs a walk to every shutter. Losing
+    // one unheard press is the cheaper failure — but it has to be on the record, because
+    // nothing else names which command went missing.
+    logError("send      : remote %u %s was not transmitted, command dropped", next.remote,
+             somfyCommandName(next.command));
   }
 }
 
