@@ -51,11 +51,17 @@ the author's house.
 
 ## RULE 1 — THE AGENT NEVER MOVES A SHUTTER
 
+**This binds the agent, not the firmware.** The device exists to move shutters on command,
+and building that is the work — the send path, the MQTT commands, the web UI buttons, the
+Home Assistant automations somebody will write against it, a position slider one day. None
+of that is restricted. What is forbidden is an *agent* causing a shutter to move while
+developing it.
+
 These are real, heavy motorised curtains in a real house. One that moves while somebody is
-standing in it can hurt them, and nothing in this repository can see where anybody is.
-**Only a human presses the button.** This rule outranks finishing the work, and it applies
-to every agent and every session — there is no test, no demo and no "just one" that is
-exempt.
+standing in it can hurt them, and an agent at a keyboard cannot see whether anybody is.
+**During development, only a human presses the button.** This rule outranks finishing the
+work, and it applies to every agent and every session — there is no test, no demo and no
+"just one" that is exempt.
 
 **Never cause a shutter to move.** That is every path that ends in a motor turning:
 
@@ -64,7 +70,8 @@ exempt.
 - publishing to the command topics in `include/topics.h`, from any MQTT client
 - calling Home Assistant cover services (`cover.open_cover`, `close_cover`, `stop_cover`,
   `set_cover_position`), or clicking them in the HA UI
-- triggering an automation, scene or script that reaches a cover
+- triggering an automation, scene or script that reaches a cover — writing one is the
+  work, firing it at a real motor is not
 - the Prog/My pairing sequence — the motor's acknowledgement *is* movement
 
 **What is safe.** `make test` is desktop logic. `make build`, `make upload`, `make ota`
