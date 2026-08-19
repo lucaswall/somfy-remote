@@ -419,7 +419,9 @@ let names = [], newest = true, open = null, last = null, sig = '';
 const esc = t => String(t).replace(/[&<>"']/g, c =>
   ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
-const ago = ms => ms < 0 ? 'never'
+// A dash, not "never": the timestamp lives only in RAM, so every reboot has nothing to say
+// about a control it has not heard yet — which is not the same as never having heard it.
+const ago = ms => ms < 0 ? '—'
   : ms < 2000 ? 'just now'
   : ms < 60000 ? Math.round(ms/1000) + 's ago'
   : ms < 3600000 ? Math.round(ms/60000) + 'm ago' : Math.round(ms/3600000) + 'h ago';
