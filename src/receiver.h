@@ -84,10 +84,17 @@ class Receiver {
   // them, which is not this class.
   bool takePress(SomfyPress *out);
 
-  // The last N intervals, oldest first.
+  // The last N intervals, oldest first. Frozen automatically when a frame fails, because
+  // that is the only moment worth looking at; reading it re-arms.
   uint16_t captureCount() const { return _captureFilled ? CAPTURE_SLOTS : _captureHead; }
   uint16_t captureAt(uint16_t i) const {
     return _capture[_captureFilled ? (uint16_t)((_captureHead + i) % CAPTURE_SLOTS) : i];
+  }
+  bool captureFrozen() const { return _captureFrozen; }
+  void rearmCapture() {
+    _captureHead = 0;
+    _captureFilled = false;
+    _captureFrozen = false;
   }
 
   uint8_t sightingCount() const { return _sightingCount; }
@@ -137,6 +144,7 @@ class Receiver {
   uint16_t _capture[CAPTURE_SLOTS] = {};
   uint16_t _captureHead = 0;
   bool _captureFilled = false;
+  bool _captureFrozen = false;
 
   uint32_t _lastEntry = 0;
   bool _haveLastEntry = false;

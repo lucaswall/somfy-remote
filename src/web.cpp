@@ -272,14 +272,17 @@ void WebUi::handleCapture() {
   _server.setContentLength(CONTENT_LENGTH_UNKNOWN);
   _server.sendHeader("Cache-Control", "no-store");
   _server.send(200, "text/plain", "");
-  snprintf(line, sizeof(line), "# last %u intervals\n", _receiver.captureCount());
+  const uint16_t count = _receiver.captureCount();
+  snprintf(line, sizeof(line), "# %u intervals, %s\n", count,
+           _receiver.captureFrozen() ? "frozen on a failed frame" : "still running");
   _server.sendContent(line);
-  for (uint16_t i = 0; i < _receiver.captureCount(); i++) {
+  for (uint16_t i = 0; i < count; i++) {
     const uint16_t entry = _receiver.captureAt(i);
     snprintf(line, sizeof(line), "%c %u\n", (entry & 0x8000u) ? 'H' : 'L', entry & 0x7FFFu);
     _server.sendContent(line);
   }
   _server.sendContent("");
+  _receiver.rearmCapture();   // read once, then start again on the next failure
 }
 
 // Streamed rather than assembled: the remote list grows with the installation, and the

@@ -324,17 +324,31 @@ void Receiver::applyEdges() {
     const bool high = (_lastEntry & 1u) != 0;
     _lastEntry = entry;
 
-    // Clamped rather than dropped: an interval longer than a frame contains is a gap, and
-    // seeing where the gaps fall is half of what makes a capture readable.
-    const uint16_t clamped = interval > 0x7FFF ? 0x7FFF : (uint16_t)interval;
-    _capture[_captureHead] = (uint16_t)(clamped | (high ? 0x8000u : 0u));
-    _captureHead = (uint16_t)((_captureHead + 1) % CAPTURE_SLOTS);
-    if (_captureHead == 0) {
-      _captureFilled = true;
+    if (!_captureFrozen) {
+      // Clamped rather than dropped: an interval longer than a frame contains is a gap, and
+      // seeing where the gaps fall is half of what makes a capture readable.
+      const uint16_t clamped = interval > 0x7FFF ? 0x7FFF : (uint16_t)interval;
+      _capture[_captureHead] = (uint16_t)(clamped | (high ? 0x8000u : 0u));
+      _captureHead = (uint16_t)((_captureHead + 1) % CAPTURE_SLOTS);
+      if (_captureHead == 0) {
+        _captureFilled = true;
+      }
     }
 
+    const uint16_t abortedBefore = _decoder.aborted();
     SomfyHeard heard;
-    if (!_decoder.feed(high, interval, &heard)) {
+    const bool decoded = _decoder.feed(high, interval, &heard);
+
+    // A frame that reached the data state and then failed is the only interesting thing on
+    // this pin, and at a noisy 4 kHz the buffer holds barely a tenth of a second — so by the
+    // time anybody thinks to look, the press has long scrolled past. Freezing on the failure
+    // keeps the sync burst and the data that followed it, which is exactly the evidence
+    // needed to tell a remote with different timings from a receiver hearing noise between
+    // the symbols. Reading the capture re-arms it.
+    if (_decoder.aborted() != abortedBefore) {
+      _captureFrozen = true;
+    }
+    if (!decoded) {
       continue;
     }
     _frames++;
