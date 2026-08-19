@@ -172,8 +172,8 @@ static void code_topic_parses_only_its_own_shape(void) {
 // it is pinned from the start so that it joins the set that cannot drift.
 static void builds_the_control_topic(void) {
   char topic[TOPIC_LEN];
-  topicControl(topic, sizeof(topic), "wemos_somfy_remote", 0xAABBCC);
-  TEST_ASSERT_EQUAL_STRING("wemos_somfy_remote/control/aabbcc", topic);
+  topicControl(topic, sizeof(topic), "wemos_somfy_remote", 0x00AABB);
+  TEST_ASSERT_EQUAL_STRING("wemos_somfy_remote/control/00aabb", topic);
 
   // Six digits always: an address with leading zeros must not collapse into a shorter
   // topic, or one control would answer to two names.
@@ -195,9 +195,9 @@ static void builds_the_press_topic(void) {
 
 static void reads_the_address_back_out_of_the_topic(void) {
   uint32_t address = 0;
-  TEST_ASSERT_TRUE(addressFromControlTopic("wemos_somfy_remote/control/aabbcc",
+  TEST_ASSERT_TRUE(addressFromControlTopic("wemos_somfy_remote/control/00aabb",
                                            "wemos_somfy_remote", &address));
-  TEST_ASSERT_EQUAL_HEX32(0xAABBCC, address);
+  TEST_ASSERT_EQUAL_HEX32(0x00AABB, address);
 
   TEST_ASSERT_TRUE(addressFromControlTopic("wemos_somfy_remote/control/000000",
                                            "wemos_somfy_remote", &address));
@@ -223,14 +223,14 @@ static void the_control_topic_round_trips(void) {
 static void refuses_anything_that_is_not_exactly_an_address(void) {
   uint32_t address = 0;
   static const char *const BAD[] = {
-      "wemos_somfy_remote/control/aabbc",        // five digits
-      "wemos_somfy_remote/control/aabbccd",      // seven
-      "wemos_somfy_remote/control/AABBCC",       // upper case: one address, one topic
-      "wemos_somfy_remote/control/aabbcg",       // not hex
+      "wemos_somfy_remote/control/00aab",        // five digits
+      "wemos_somfy_remote/control/00aabbd",      // seven
+      "wemos_somfy_remote/control/00AABB",       // upper case: one address, one topic
+      "wemos_somfy_remote/control/00aabg",       // not hex
       "wemos_somfy_remote/control/",             // nothing at all
-      "wemos_somfy_remote/control/aabbcc/press", // the press topic is not the control
+      "wemos_somfy_remote/control/00aabb/press", // the press topic is not the control
       "wemos_somfy_remote/code/remote0",         // a neighbouring family
-      "other_device/control/aabbcc",             // somebody else's device id
+      "other_device/control/00aabb",             // somebody else's device id
   };
   for (uint8_t i = 0; i < sizeof(BAD) / sizeof(BAD[0]); i++) {
     TEST_ASSERT_FALSE(addressFromControlTopic(BAD[i], "wemos_somfy_remote", &address));
@@ -241,9 +241,9 @@ static void refuses_anything_that_is_not_exactly_an_address(void) {
 // Three wildcards are live on this connection at once and a cross-match moves a shutter.
 static void the_control_family_does_not_collide(void) {
   uint8_t remote = 0xFF;
-  TEST_ASSERT_FALSE(remoteFromCommandTopic("wemos_somfy_remote/control/aabbcc",
+  TEST_ASSERT_FALSE(remoteFromCommandTopic("wemos_somfy_remote/control/00aabb",
                                            "wemos_somfy_remote", &remote));
-  TEST_ASSERT_FALSE(remoteFromCodeTopic("wemos_somfy_remote/control/aabbcc",
+  TEST_ASSERT_FALSE(remoteFromCodeTopic("wemos_somfy_remote/control/00aabb",
                                         "wemos_somfy_remote", &remote));
 
   uint32_t address = 0;

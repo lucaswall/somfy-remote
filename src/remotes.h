@@ -49,6 +49,17 @@ class Remotes {
     }
   }
 
+  // Applies a press somebody else made, overheard on the air. False means it was refused,
+  // and the reasons are deliberately the send path's minus the rolling code: an index that
+  // does not exist, one Home Assistant has no entities for, and one this firmware refuses
+  // to drive because its motor does not work. A remote we will not move is a remote we must
+  // not claim a position for.
+  //
+  // Nothing here transmits and nothing here touches a counter. Overheard presses live in a
+  // different address space entirely, and a foreign rolling code must never meet one of
+  // ours.
+  bool observe(uint8_t remote, uint8_t command);
+
   uint32_t addressOf(uint8_t remote) const;
   bool enabled(uint8_t remote) const;
   bool operational(uint8_t remote) const;

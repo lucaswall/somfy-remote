@@ -32,7 +32,7 @@ Wire by **GPIO number**, never by silkscreen label:
 
 | CC1101 | GPIO | Pad | Note |
 |---|---|---|---|
-| GDO0 | 5 | D1 | The data line. In transmit the chip reads it; we drive it |
+| GDO0 | 5 | D1 | The data line, and it goes both ways. Transmitting, the chip reads it and we drive it; receiving, the chip drives it and we read it |
 | CSN | 15 | D8 | See the warning below |
 | SCK | 14 | D5 | Hardware SPI, not reassignable |
 | MOSI | 13 | D7 | Hardware SPI |
@@ -65,6 +65,12 @@ Somfy RTS sits at **433.42 MHz**. Nearly every other 433 MHz device, and every d
 every CC1101 library, is 433.92. A radio configured at 433.92 will do everything correctly
 and be inaudible to the motors.
 
+One consequence worth stating for receive: that offset applies in both directions, so the
+receiver is listening about 55 kHz away from where a handheld thinks it is transmitting, and
+a handheld's own SAW resonator may be a similar distance the other way. The receive
+bandwidth is set generously for exactly that reason, and it is the first thing to widen if a
+control cannot be heard.
+
 `lib/CC1101/` writes the frequency word from the module's 26 MHz crystal, and one
 empirical offset in `FSCTRL0`. That offset is inherited from the vendor driver the 2023
 firmware used, and is what the bridge has been transmitting with since — it is not a
@@ -82,8 +88,12 @@ synthesiser calibrates. Every failure it reports is wiring or power, never softw
 - `VERSION` reads `0xFF` — MISO is floating; nothing is answering.
 - Answers but will not enter transmit — power, or a crystal that is not oscillating.
 
-**GDO0 is the one wire it cannot check.** The chip never reads it back, so no register test
-can tell whether it is connected, mis-wired or shorted. Verify that one by eye.
+**GDO0 used to be the one wire it could not check**, and that is no longer true in the
+direction that matters. While only the ESP drives it, nothing reads it back and no register
+test can say whether it is connected. But the chip can drive it too — `IOCFG0 = 0x2F` is
+"HW to 0", and `0x6F` is the same inverted — so writing those two values and reading GPIO5
+is a deterministic continuity test that needs no RF at all. The firmware runs it before it
+ever tries to listen.
 
 ## What must survive a reflash
 

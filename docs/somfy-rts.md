@@ -35,6 +35,23 @@ it. Undoing it means walking the chain backwards. Note that this is a chain, not
 changing one field does not necessarily change every byte after it, because a checksum
 change can cancel it out.
 
+### The checksum cannot see a single-bit error
+
+Worth knowing before trusting a received frame, and not obvious from either half on its own.
+A bit flipped in transit unwinds into the **same bit flipped in two adjacent plaintext
+bytes** — `plain[i] = frame[i] ^ frame[i-1]` and `plain[i+1] = frame[i+1] ^ frame[i]` — and
+two identical contributions to a checksum that is only an XOR of nibbles cancel exactly. The
+frame still sums to zero.
+
+Only two of the seven bytes are protected: byte 0 by the `0xA7` comparison, and byte 6
+because nothing follows it to cancel against. Forty of the fifty-six possible single-bit
+flips decode cleanly, every one of them as a *different* address, rolling code or command.
+`test_somfy_frame` asserts the number so it cannot quietly get worse.
+
+The consequence is the whole design of the receive path: a corrupted frame does not look
+corrupt, it looks like another remote. A press is therefore only believed once two copies
+agree byte for byte, which the five repeats of every press make cheap.
+
 ### Commands
 
 | Value | Button | Sent by this firmware |

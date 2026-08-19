@@ -2,17 +2,30 @@
 
 #include <stdint.h>
 
-// Just enough CC1101 to hold the radio in asynchronous OOK transmit mode while something
-// else drives the data pin. No FIFO, no packet engine, no receive path: Somfy RTS is a
-// bit-banged waveform and one-way, so everything the chip could do for us is unused.
+// Just enough CC1101 to hold the radio in asynchronous OOK mode while something else works
+// the data pin. No FIFO and no packet engine: Somfy RTS is a bit-banged waveform, so
+// everything the chip could do for us is bypassed in both directions.
 //
-// Registers and values are the TI CC1101 datasheet's, and the configuration is the one the
-// deployed bridge transmits with — see docs/hardware.md.
+// **GDO0 is shared, and only one side may drive it at a time.** The datasheet (SWRS061I
+// §27.1) allows the demodulated data out on GDO0, so receive needs no second wire — but in
+// receive the chip drives that pin and in transmit the ESP does. `release()` hands the pin
+// to the ESP by 3-stating the chip's driver, `receive()` takes it back. §11.2 says the chip
+// makes GDO0 an input while it is *transmitting*, which is why the deployed firmware has
+// driven it for years without harm; it says nothing about IDLE, and IDLE is where this
+// radio spends almost all of its life.
+//
+// Registers and values are the TI CC1101 datasheet's, and the transmit half is the
+// configuration the deployed bridge has been using since 2023 — see docs/hardware.md.
 
 // Status registers, for the self-test.
 #define CC1101_PARTNUM 0x30
 #define CC1101_VERSION 0x31
 #define CC1101_MARCSTATE 0x35
+
+// MARCSTATE values worth naming. Table for 0x35 in the datasheet.
+#define CC1101_STATE_IDLE 0x01
+#define CC1101_STATE_RX 0x0D
+#define CC1101_STATE_TX 0x13
 
 class CC1101 {
  public:
@@ -26,9 +39,23 @@ class CC1101 {
 
   // Enters transmit and waits for the synthesiser to settle. Data sent before it does is
   // simply not transmitted, which is why this waits rather than returning immediately.
+  //
+  // Call release() first, then drive the data pin, then this. It restores GDO0's serial
+  // data configuration on the way into transmit, so the chip sends under exactly the
+  // register state it has used since 2023.
   bool transmit();
 
+  // Enters receive with the demodulated data on GDO0. The caller must have made its own
+  // pin an input first — from here the chip is driving that wire.
+  bool receive();
+
+  // IDLE, with GDO0 3-stated so the ESP can drive it. The resting state of the radio, and
+  // the only state in which it is safe to key the transmitter by hand.
+  void release();
+
   void idle();
+
+  uint8_t state() { return readStatus(CC1101_MARCSTATE); }
 
   // True when the version register reads back a value a real CC1101 returns. 0x00 means
   // MISO is stuck low or the module is unpowered; 0xFF means it is floating.
@@ -46,6 +73,7 @@ class CC1101 {
   void reset();
   void configure();
   void setFrequency(float megahertz);
+  bool waitForState(uint8_t want);
 
   uint8_t _csn;
 };

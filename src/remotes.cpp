@@ -32,6 +32,14 @@ bool Remotes::transmittable(uint8_t remote) const {
   return remote < count() && enabled(remote) && operational(remote) && hasCounter(remote);
 }
 
+bool Remotes::observe(uint8_t remote, uint8_t command) {
+  if (remote >= count() || !enabled(remote) || !operational(remote)) {
+    return false;
+  }
+  _states[remote].observe(command);
+  return true;
+}
+
 void Remotes::queue(uint8_t remote, SomfyCommand command) {
   if (remote >= count()) {
     logError("remotes   : no remote %u, have %u", remote, count());

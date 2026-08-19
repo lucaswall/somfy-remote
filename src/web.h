@@ -4,6 +4,7 @@
 
 #include "ha_mqtt.h"
 #include "net.h"
+#include "receiver.h"
 #include "remotes.h"
 #include "store.h"
 
@@ -23,11 +24,19 @@
 // asks for a password when it is opened. That is a real boundary rather than decoration:
 // Prog enrols an emulated remote at a motor, and removing one takes three Home Assistant
 // entities with it.
+//
+// `/controls` sits behind the same password and is the tool for teaching the bridge which
+// physical handhelds and wall buttons exist. A separate page rather than a section of
+// settings because it is used differently: walking around a house with a phone, pressing a
+// button and naming whatever appears. It needs the password for a different reason too —
+// the addresses on it are the RF credentials of the motors in this house, and they must not
+// reach `/api/state`, which both open pages already poll.
 class WebUi {
  public:
-  WebUi(Remotes &remotes, Store &store, HaMqtt &mqtt, Net &net, const char *hostname)
+  WebUi(Remotes &remotes, Store &store, HaMqtt &mqtt, Net &net, Receiver &receiver,
+        const char *hostname)
       : _server(80), _remotes(remotes), _store(store), _mqtt(mqtt), _net(net),
-        _hostname(hostname) {}
+        _receiver(receiver), _hostname(hostname) {}
 
   // Starts itself once WiFi is up, the same way OTA does, so main does not have to
   // sequence them.
@@ -46,6 +55,12 @@ class WebUi {
   void handleRemoteAdd();
   void handleRemoteRemove();
   void handleRemoteFlags();
+  void handleControls();
+  void handleHeard();
+  void handleArm();
+  void handleControlSave();
+  void handleControlForget();
+  void handleControlIgnore();
 
   bool _started = false;
 
@@ -54,5 +69,6 @@ class WebUi {
   Store &_store;
   HaMqtt &_mqtt;
   Net &_net;
+  Receiver &_receiver;
   const char *_hostname;
 };

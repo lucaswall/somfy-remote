@@ -4,6 +4,8 @@
 #include <WiFiClient.h>
 
 #include "config_doc.h"
+#include "control_map.h"
+#include "receiver.h"
 #include "record_store.h"
 #include "remotes.h"
 #include "store.h"
@@ -21,8 +23,9 @@
 // path overwriting the only durable copy with a zero.
 class HaMqtt {
  public:
-  HaMqtt(Remotes &remotes, Store &store, const char *clientId)
-      : _mqtt(_wifi), _remotes(remotes), _store(store), _clientId(clientId) {}
+  HaMqtt(Remotes &remotes, Store &store, Receiver &receiver, const char *clientId)
+      : _mqtt(_wifi), _remotes(remotes), _store(store), _receiver(receiver),
+        _clientId(clientId) {}
 
   void loop();
   bool connected() { return _mqtt.connected(); }
@@ -45,6 +48,20 @@ class HaMqtt {
   // a discovery topic is how MQTT discovery expresses deletion.
   void publishDiscoveryRemoval(uint8_t remote);
 
+  // The learned controls: which physical handheld or wall button is which, and what each
+  // one drives. Held here because this is where the retained topics that carry it arrive,
+  // and because acting on a heard press means publishing cover state.
+  const ctl::ControlMap &controls() const { return _controls; }
+
+  // Names a control, or renames one. False means the broker did not take it — and that is
+  // worth surfacing rather than swallowing, because the retained topic is the only durable
+  // copy and somebody has walked across a house to produce it.
+  bool saveControl(const ctl::Control &control);
+
+  // An empty retained payload is how MQTT deletes. The press topic is not retained and so
+  // needs no clearing.
+  bool forgetControl(uint32_t address);
+
  private:
   bool connect();
   void finishReconcile();
@@ -55,6 +72,9 @@ class HaMqtt {
   void publishState(uint8_t remote);
   void publishCounter(uint8_t remote);
   void publishBridgeDiscovery();
+  void publishControlDiscovery(const ctl::Control &control);
+  void publishControlRemoval(uint32_t address);
+  void applyHeardPresses();
   void publishHealth();
   void publishConfigDocument();
   void onMessage(const char *topic, const uint8_t *payload, unsigned int length);
@@ -63,7 +83,10 @@ class HaMqtt {
   PubSubClient _mqtt;
   Remotes &_remotes;
   Store &_store;
+  Receiver &_receiver;
   const char *_clientId;
+
+  ctl::ControlMap _controls;
 
   cfg::ConfigDoc _config;          // what the device believes
   cfg::ConfigDoc _staged;          // what arrived retained, awaiting reconciliation

@@ -28,10 +28,18 @@ cred='(PASSWORD|PASSWD|SECRET|TOKEN|API_?KEY|PSK|SSID)[[:space:]"]*([=:]|[[:spac
 # "addr" key carrying hex, which is exactly what a worked example pasted into a doc looks
 # like.
 rfid='"(base|addr)"[[:space:]]*:[[:space:]]*"0[xX][0-9a-fA-F]'
-allow='192\.0\.2\.|198\.51\.100\.|203\.0\.113\.|0\.0\.0\.0|127\.0\.0\.1|255\.255\.255\.255|<[A-Z_]+>|your-|placeholder|xx:xx|change-me|"0x000000"'
+# The learned controls put an address in a *topic path* rather than in a JSON value, so the
+# pattern above cannot see one — and a scanner that cannot fire is worse than no scanner,
+# because it still reads like protection. These are the addresses of the handhelds in this
+# house and its neighbours', which is the same class of secret as our own base.
+# The convention is the same one the configuration document already uses: an example
+# address is obviously synthetic. Here that means it starts 00, which no address in this
+# installation does — so a real one pasted into a doc, a test or a commit message fires.
+ctl='/control/([1-9a-fA-F][0-9a-fA-F]|[0-9a-fA-F][1-9a-fA-F])[0-9a-fA-F]{4}'
+allow='192\.0\.2\.|198\.51\.100\.|203\.0\.113\.|0\.0\.0\.0|127\.0\.0\.1|255\.255\.255\.255|<[A-Z_]+>|your-|placeholder|xx:xx|change-me|"0x000000"|/control/00[0-9a-fA-F]{4}|/control/[+<{$]'
 
 fail=0
-for pat in "$ipv4" "$mac" "$cred" "$rfid"; do
+for pat in "$ipv4" "$mac" "$cred" "$rfid" "$ctl"; do
   # The allowlist is matched against the line's text only. git grep prefixes every hit with
   # "path:line:", and matching that too would exempt whole files whose *path* happens to
   # contain an allowed word.

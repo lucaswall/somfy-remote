@@ -14,6 +14,7 @@
 #include "ha_mqtt.h"
 #include "net.h"
 #include "radio.h"
+#include "receiver.h"
 #include "remotes.h"
 #include "secrets.h"
 #include "store.h"
@@ -38,8 +39,9 @@ static Net net;
 static SomfyRadio radio(PIN_CSN, PIN_DATA);
 static Store store;
 static Remotes remotes(radio, store);
-static HaMqtt mqtt(remotes, store, HOST);
-static WebUi web(remotes, store, mqtt, net, HOST);
+static Receiver receiver(radio, remotes);
+static HaMqtt mqtt(remotes, store, receiver, HOST);
+static WebUi web(remotes, store, mqtt, net, receiver, HOST);
 
 // A radio that fails to start is not recoverable by hand: the board is in a case. Retry it
 // from the loop instead of logging once and running blind forever.
@@ -77,6 +79,11 @@ void setup() {
   delay(200);
   banner();
 
+  // Before radio.begin(), because begin() resets the chip and has to be able to stop the
+  // receiver while IOCFG0 is briefly a divided crystal clock on the data pin.
+  receiver.begin(PIN_DATA);
+  radio.listener(&receiver);
+
   if (radio.begin()) {
     logLine("radio     : CC1101 ready on 433.42 MHz");
   } else {
@@ -107,7 +114,8 @@ void loop() {
   }
 
   remotes.loop();
-  store.loop();   // compaction, never on the press path
+  receiver.loop();   // decodes what the interrupt handler recorded; inert unless armed
+  store.loop();      // compaction, never on the press path
 
 
   if (elapsed(now, lastHealth, HEALTH_MS)) {
@@ -118,6 +126,13 @@ void loop() {
             net.connected() ? "up" : "down", mqtt.connected() ? "up" : "down",
             radio.ready() ? "up" : "down", remotes.pending(), errorBuffer().count(),
             store.activeName(), store.freeSlots(), store.degraded() ? " DEGRADED" : "");
+    if (receiver.armed()) {
+      const Receiver::Stats rx = receiver.stats();
+      logLine("receiver  : %lus left, %lu edges/s, %lu frames, %lu presses, %u mutes%s",
+              (unsigned long)receiver.secondsLeft(), (unsigned long)receiver.edgesPerSecond(),
+              (unsigned long)rx.frames, (unsigned long)rx.presses, rx.mutes,
+              rx.muted ? " MUTED" : "");
+    }
   }
 
   const uint32_t heap = ESP.getFreeHeap();

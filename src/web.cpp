@@ -9,6 +9,7 @@
 #include "log.h"
 #include "page.h"
 #include "secrets.h"
+#include "control_map.h"
 #include "somfy_frame.h"
 
 void WebUi::loop() {
@@ -41,6 +42,12 @@ void WebUi::start() {
   _server.on("/api/remote/add", HTTP_POST, [this]() { handleRemoteAdd(); });
   _server.on("/api/remote/remove", HTTP_POST, [this]() { handleRemoteRemove(); });
   _server.on("/api/remote/flags", HTTP_POST, [this]() { handleRemoteFlags(); });
+  _server.on("/controls", HTTP_GET, [this]() { handleControls(); });
+  _server.on("/api/heard", HTTP_GET, [this]() { handleHeard(); });
+  _server.on("/api/receiver/arm", HTTP_POST, [this]() { handleArm(); });
+  _server.on("/api/control/save", HTTP_POST, [this]() { handleControlSave(); });
+  _server.on("/api/control/forget", HTTP_POST, [this]() { handleControlForget(); });
+  _server.on("/api/control/ignore", HTTP_POST, [this]() { handleControlIgnore(); });
   _server.onNotFound([this]() { _server.send(404, "text/plain", "not found"); });
   _server.begin();
 
@@ -74,6 +81,180 @@ void WebUi::handleSettings() {
   }
   _server.sendHeader("Cache-Control", "no-store");
   _server.send_P(200, "text/html", SETTINGS_HTML);
+}
+
+void WebUi::handleControls() {
+  if (!settingsAuthorised()) {
+    return;
+  }
+  _server.sendHeader("Cache-Control", "no-store");
+  _server.send_P(200, "text/html", CONTROLS_HTML);
+}
+
+// Every RF address this device knows about somebody else's remote leaves through here and
+// nowhere else. Deliberately not folded into /api/state, which both open pages poll without
+// a password: an address is the credential of a motor, and this repository already has one
+// recorded incident of credentials reaching an unauthenticated endpoint.
+void WebUi::handleHeard() {
+  if (!settingsAuthorised()) {
+    return;
+  }
+
+  const Receiver::Stats rx = _receiver.stats();
+  const uint32_t now = millis();
+  char chunk[256];
+
+  _server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+  _server.sendHeader("Cache-Control", "no-store");
+  _server.send(200, "application/json", "");
+
+  snprintf(chunk, sizeof(chunk),
+           "{\"armed\":%s,\"left\":%lu,\"edges\":%lu,\"frames\":%lu,\"presses\":%lu,"
+           "\"mutes\":%u,\"muted\":%s,\"overflows\":%lu,\"aborted\":%lu,\"heard\":[",
+           _receiver.armed() ? "true" : "false", (unsigned long)_receiver.secondsLeft(),
+           (unsigned long)_receiver.edgesPerSecond(), (unsigned long)rx.frames,
+           (unsigned long)rx.presses, rx.mutes, rx.muted ? "true" : "false",
+           (unsigned long)rx.overflows, (unsigned long)rx.aborted);
+  _server.sendContent(chunk);
+
+  const ctl::ControlMap &controls = _mqtt.controls();
+  bool first = true;
+  for (uint8_t i = 0; i < _receiver.sightingCount(); i++) {
+    const Sighting &sighting = _receiver.sighting(i);
+    if (controls.find(sighting.address) != nullptr) {
+      continue;   // named already: it belongs in the other list
+    }
+    snprintf(chunk, sizeof(chunk),
+             "%s{\"a\":%lu,\"n\":%u,\"code\":%u,\"cmd\":%u,\"last\":%lu,\"first\":%lu}",
+             first ? "" : ",", (unsigned long)sighting.address, sighting.presses,
+             sighting.lastCode, sighting.lastCommand,
+             (unsigned long)(now - sighting.lastMs), (unsigned long)(now - sighting.firstMs));
+    _server.sendContent(chunk);
+    first = false;
+  }
+
+  _server.sendContent("],\"known\":[");
+  for (uint8_t i = 0; i < controls.count(); i++) {
+    const ctl::Control &control = controls.at(i);
+    snprintf(chunk, sizeof(chunk), "%s{\"a\":%lu,\"name\":\"%s\",\"d\":%lu}",
+             i == 0 ? "" : ",", (unsigned long)control.address, control.name,
+             (unsigned long)control.drives);
+    _server.sendContent(chunk);
+  }
+
+  // The remote names, so the page can offer "Office Shutters" rather than "4". Home
+  // Assistant publishes them; this is display only, exactly as everywhere else.
+  _server.sendContent("],\"names\":[");
+  for (uint8_t i = 0; i < _remotes.count(); i++) {
+    snprintf(chunk, sizeof(chunk), "%s\"%s\"", i == 0 ? "" : ",", _mqtt.nameOf(i));
+    _server.sendContent(chunk);
+  }
+  _server.sendContent("]}");
+  _server.sendContent("");
+}
+
+// Zero minutes stops. Anything else starts or extends the window — extending rather than
+// restarting, so pressing the button twice mid-walk cannot drop a frame.
+void WebUi::handleArm() {
+  if (!settingsAuthorised()) {
+    return;
+  }
+  const long minutes = _server.arg("minutes").toInt();
+  if (minutes <= 0) {
+    _receiver.disarm();
+    _server.send(200, "text/plain", "stopped\n");
+    return;
+  }
+  if (minutes > 240) {
+    _server.send(400, "text/plain", "at most 240 minutes\n");
+    return;
+  }
+  if (!_receiver.arm((uint16_t)minutes)) {
+    _server.send(503, "text/plain", "the radio is not ready\n");
+    return;
+  }
+  _server.send(200, "text/plain", "listening\n");
+}
+
+void WebUi::handleControlSave() {
+  if (!settingsAuthorised()) {
+    return;
+  }
+  if (!_server.hasArg("address") || !_server.hasArg("name")) {
+    _server.send(400, "text/plain", "address and name are required\n");
+    return;
+  }
+
+  ctl::Control control = {};
+  control.address = (uint32_t)strtoul(_server.arg("address").c_str(), nullptr, 10) & 0xFFFFFFu;
+
+  // The name reaches two JSON documents — the retained payload and /api/heard — and one of
+  // them is assembled with snprintf rather than a serialiser. A quote in it would produce a
+  // page that will not parse and a control nobody can edit any more, so the characters that
+  // could do that never get stored in the first place.
+  const String requested = _server.arg("name");
+  uint8_t kept = 0;
+  for (uint16_t i = 0; i < requested.length() && kept < ctl::NAME_LEN - 1; i++) {
+    const char c = requested[i];
+    if (c == '"' || c == '\\' || (uint8_t)c < 0x20) {
+      continue;
+    }
+    control.name[kept++] = c;
+  }
+  control.name[kept] = '\0';
+  if (kept == 0) {
+    _server.send(400, "text/plain", "a name is required\n");
+    return;
+  }
+
+  // "0,2,3" — the indices this control drives. Only the static bound is applied here;
+  // whether an index currently exists is decided when a press arrives, because the
+  // configuration is a separately versioned document that may not have landed yet.
+  const String drives = _server.arg("drives");
+  int at = 0;
+  while (at < (int)drives.length()) {
+    const int comma = drives.indexOf(',', at);
+    const int end = comma < 0 ? drives.length() : comma;
+    const long index = drives.substring(at, end).toInt();
+    if (index >= 0 && index < rs::MAX_REMOTES) {
+      control.drives |= (uint32_t)1u << index;
+    }
+    at = end + 1;
+  }
+
+  if (!_mqtt.saveControl(control)) {
+    // Not a formality. The retained topic is the only durable copy, and reporting success
+    // for a save the broker never took would lose an hour of walking at the next restart.
+    _server.send(503, "text/plain", "the broker did not accept it — nothing was saved\n");
+    return;
+  }
+  _receiver.forgetSighting(control.address);
+  _server.send(200, "text/plain", "saved\n");
+}
+
+void WebUi::handleControlForget() {
+  if (!settingsAuthorised()) {
+    return;
+  }
+  const uint32_t address =
+      (uint32_t)strtoul(_server.arg("address").c_str(), nullptr, 10) & 0xFFFFFFu;
+  if (!_mqtt.forgetControl(address)) {
+    _server.send(503, "text/plain", "the broker did not accept it\n");
+    return;
+  }
+  _server.send(200, "text/plain", "forgotten\n");
+}
+
+// Drops a sighting without naming it — the neighbour's remote, or a stray frame that
+// survived the checksum. It comes back if it is heard again, which is the right behaviour:
+// this is a work list, not a block list.
+void WebUi::handleControlIgnore() {
+  if (!settingsAuthorised()) {
+    return;
+  }
+  _receiver.forgetSighting(
+      (uint32_t)strtoul(_server.arg("address").c_str(), nullptr, 10) & 0xFFFFFFu);
+  _server.send(200, "text/plain", "dropped\n");
 }
 
 // Streamed rather than assembled: the remote list grows with the installation, and the
@@ -390,5 +571,23 @@ void WebUi::handleStatus() {
              name[0] != '\0' ? name : "");
     _server.sendContent(line);
   }
+
+  // What the receiver is doing, always — not only when it is armed. A receiver that has
+  // muted itself, or that is hearing nothing because it was never started, looks exactly
+  // like a quiet house from every other angle.
+  const Receiver::Stats rx = _receiver.stats();
+  snprintf(line, sizeof(line),
+           "receiver: %s  %lu edges/s  %lu frames  %lu presses  %u known\n",
+           _receiver.armed() ? (rx.muted ? "MUTED" : "listening") : "off",
+           (unsigned long)_receiver.edgesPerSecond(), (unsigned long)rx.frames,
+           (unsigned long)rx.presses, _mqtt.controls().count());
+  _server.sendContent(line);
+  snprintf(line, sizeof(line),
+           "        : %lus left, %lu int, %lu ring, %lu overflow, %lu aborted, %u mutes%s\n",
+           (unsigned long)_receiver.secondsLeft(), (unsigned long)rx.interrupts,
+           (unsigned long)rx.ringWrites, (unsigned long)rx.overflows,
+           (unsigned long)rx.aborted, rx.mutes,
+           rx.ownAddress > 0 ? "  OWN ADDRESS HEARD" : "");
+  _server.sendContent(line);
   _server.sendContent("");
 }

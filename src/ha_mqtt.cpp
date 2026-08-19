@@ -136,10 +136,82 @@ void HaMqtt::loop() {
     publishCounter(i);
   }
 
+  applyHeardPresses();
+
   if (elapsed(millis(), _lastHealth, HEALTH_PUBLISH_MS)) {
     _lastHealth = millis();
     publishHealth();
   }
+}
+
+// A press somebody made on a handheld. This is the whole point of listening: until now
+// every cover in Home Assistant has been a report of what this bridge believes it sent, and
+// a shutter opened by hand stayed closed on the dashboard until somebody used the app.
+//
+// Nothing here transmits, queues a command, or touches a rolling code. A foreign counter
+// and one of ours live in different address spaces and must never meet.
+void HaMqtt::applyHeardPresses() {
+  SomfyPress press;
+  while (_receiver.takePress(&press)) {
+    const ctl::Control *control = _controls.find(press.address);
+    if (control == nullptr) {
+      continue;   // heard, recorded as a sighting, and waiting for a human to name it
+    }
+
+    // Not retained, and it must not be: Home Assistant discards a retained payload on an
+    // event topic as a replay, which is right — a button pressed yesterday is not news to
+    // a broker reconnect.
+    char topic[TOPIC_LEN], payload[64];
+    topicControlPress(topic, sizeof(topic), MQTT_DEVICE_ID, press.address);
+    snprintf(payload, sizeof(payload), "{\"event_type\":\"%x\",\"code\":%u}",
+             press.command, press.rollingCode);
+    _mqtt.publish(topic, payload, false);
+
+    uint8_t applied = 0;
+    for (uint8_t i = 0; i < rs::MAX_REMOTES; i++) {
+      if ((control->drives & ((uint32_t)1u << i)) == 0) {
+        continue;
+      }
+      if (_remotes.observe(i, press.command)) {
+        applied++;
+      }
+    }
+    logLine("heard     : %s %s, %u cover(s) updated", control->name,
+            somfyCommandName((SomfyCommand)press.command), applied);
+  }
+}
+
+// Names a control and publishes it retained, in that order, so the page shows what the
+// device believes even if the broker refuses. False means the retained copy did not land —
+// the RAM map is authoritative for reads only, and with no broker a save has nowhere
+// durable to go.
+bool HaMqtt::saveControl(const ctl::Control &control) {
+  if (!_controls.set(control)) {
+    logError("mqtt      : no room for another control, %u already", _controls.count());
+    return false;
+  }
+
+  char topic[TOPIC_LEN], payload[ctl::PAYLOAD_LEN];
+  topicControl(topic, sizeof(topic), MQTT_DEVICE_ID, control.address);
+  const size_t written = ctl::serialise(control, payload, sizeof(payload));
+  if (written == 0 || !_mqtt.publish(topic, payload, true)) {
+    logError("mqtt      : control \"%s\" was not saved to the broker", control.name);
+    return false;
+  }
+  publishControlDiscovery(control);
+  logLine("control   : \"%s\" saved", control.name);
+  return true;
+}
+
+bool HaMqtt::forgetControl(uint32_t address) {
+  char topic[TOPIC_LEN];
+  topicControl(topic, sizeof(topic), MQTT_DEVICE_ID, address);
+  if (!_mqtt.publish(topic, "", true)) {
+    return false;
+  }
+  publishControlRemoval(address);
+  _controls.remove(address);
+  return true;
 }
 
 // The floor, enforced on the way out. A press only ever raises a counter, so a publish
@@ -191,6 +263,10 @@ bool HaMqtt::connect() {
   topicCodeWildcard(topic, sizeof(topic), MQTT_DEVICE_ID);
   _mqtt.subscribe(topic);
   topicNames(topic, sizeof(topic), MQTT_DEVICE_ID);
+  _mqtt.subscribe(topic);
+  // The learned controls. Retained and replayed on subscribe, which is what lets a
+  // replacement board recover a map somebody spent an hour walking a house to build.
+  topicControlWildcard(topic, sizeof(topic), MQTT_DEVICE_ID);
   _mqtt.subscribe(topic);
   // Our own retained cover state, read back. The device infers position from what it
   // transmitted and holds it in RAM, so every reboot and every OTA used to throw it away —
@@ -622,6 +698,56 @@ void HaMqtt::publishBridgeDiscovery() {
   }
 }
 
+// One Home Assistant event entity per named control, so a wall button becomes something an
+// automation can trigger on. Fifteen physical controls in this house, several buttons each:
+// that is arguably worth more than the cover state this feature was built for.
+//
+// Three constraints come from the platform and are not negotiable. The state topic must be
+// non-retained (a retained payload is discarded as a replay), `event_types` is required,
+// and the payload must carry an `event_type` drawn from it. The list is every command
+// nibble the protocol defines rather than the four this firmware transmits — a handheld
+// sends My+Up, My+Down, Up+Down, Sun and Flag too, and an entity that dropped them would
+// throw away exactly what makes a multi-button remote interesting.
+void HaMqtt::publishControlDiscovery(const ctl::Control &control) {
+  static const char *const NIBBLES[9] = {"1", "2", "3", "4", "5", "6", "8", "9", "a"};
+
+  char availability[TOPIC_LEN], press[TOPIC_LEN];
+  topicAvailability(availability, sizeof(availability), MQTT_DEVICE_ID);
+  topicControlPress(press, sizeof(press), MQTT_DEVICE_ID, control.address);
+
+  JsonDocument doc;
+  JsonObject device = doc["device"].to<JsonObject>();
+  device["identifiers"][0] = MQTT_DEVICE_ID;
+  device["name"] = "Somfy Bridge";
+
+  doc["availability_topic"] = availability;
+  doc["state_topic"] = press;
+  doc["name"] = control.name;
+  doc["icon"] = "mdi:remote";
+  JsonArray types = doc["event_types"].to<JsonArray>();
+  for (uint8_t i = 0; i < 9; i++) {
+    types.add(NIBBLES[i]);
+  }
+
+  char object[OBJECT_ID_LEN], topic[DISCOVERY_TOPIC_LEN], payload[PAYLOAD_LEN];
+  snprintf(object, sizeof(object), "%s_ctl_%06lx", MQTT_DEVICE_ID,
+           (unsigned long)(control.address & 0xFFFFFFu));
+  doc["unique_id"] = object;
+  discoveryTopic(topic, sizeof(topic), HA_DISCOVERY_PREFIX, "event", object);
+  const size_t written = serializeJson(doc, payload, sizeof(payload));
+  if (written < sizeof(payload) - 1) {
+    _mqtt.publish(topic, payload, true);
+  }
+}
+
+void HaMqtt::publishControlRemoval(uint32_t address) {
+  char object[OBJECT_ID_LEN], topic[DISCOVERY_TOPIC_LEN];
+  snprintf(object, sizeof(object), "%s_ctl_%06lx", MQTT_DEVICE_ID,
+           (unsigned long)(address & 0xFFFFFFu));
+  discoveryTopic(topic, sizeof(topic), HA_DISCOVERY_PREFIX, "event", object);
+  _mqtt.publish(topic, "", true);
+}
+
 void HaMqtt::publishHealth() {
   char topic[TOPIC_LEN], payload[192];
   topicHealth(topic, sizeof(topic), MQTT_DEVICE_ID);
@@ -710,6 +836,23 @@ void HaMqtt::onMessage(const char *topic, const uint8_t *payload, unsigned int l
     }
     _mirror[remote] = value;
     _haveMirror[remote] = true;
+    return;
+  }
+
+  uint32_t address = 0;
+  if (addressFromControlTopic(topic, MQTT_DEVICE_ID, &address)) {
+    if (length == 0) {
+      _controls.remove(address);   // an empty retained payload is how MQTT says "forget"
+      return;
+    }
+    ctl::Control control;
+    if (!ctl::parse((const char *)payload, length, address, &control)) {
+      logError("mqtt      : a control payload did not parse");
+      return;
+    }
+    if (!_controls.set(control)) {
+      logError("mqtt      : no room for another control, %u already", _controls.count());
+    }
     return;
   }
 

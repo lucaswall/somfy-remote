@@ -10,14 +10,17 @@ each with its own address and its own rolling code counter, transmitting the sam
 the physical ones do:
 
 ```
-handheld remote ──433.42 MHz RTS──┐
-                                  ├──> shutter motor
-   this bridge ───────────────────┘
-        │
-        └── MQTT discovery ──> Home Assistant
+handheld remote ──433.42 MHz RTS──┬──> shutter motor
+                                  │
+                                  └──> this bridge ──┐
+   this bridge ──────────────────────> shutter motor │
+        │                                            │
+        └── MQTT discovery ──> Home Assistant <──────┘
 ```
 
-Both keep working, and neither is aware of the other.
+Both keep working. The bridge also **listens**, so a shutter opened with the handheld on the
+wall stops reading closed in Home Assistant — and every physical button in the house becomes
+something an automation can trigger on.
 
 Everything except the radio runs on a Wemos D1 mini: WiFi, OTA, a debug web UI at
 `http://somfy-remote.local/`, and the MQTT integration.
@@ -43,17 +46,38 @@ Prog lives on the device's own settings page, behind a password, next to the add
 pairs. A one-tap unconfirmed button on a dashboard is the wrong home for the one action
 that cannot be undone by pressing something else.
 
+## Hearing the handhelds
+
+The bridge can listen to the remotes already in the house. A captured frame carries an
+address, a rolling code and a command — and **nothing that says which shutter moved**, so
+which control drives what is declared by a person, once, on the device's own `/controls`
+page.
+
+The interaction is built for a walk: start listening, press a button anywhere in the house,
+and its row appears at the top of the page within a second. Type a name, tick the shutters
+it drives, walk to the next one. Pressing the same button twice does not make a second row.
+There is nothing to arm per control and no order to remember — or press everything first and
+name the list afterwards, sorted by what was heard first, which comes to the same thing.
+
+Listening is **off by default and expires**. 433 MHz is shared with every doorbell and
+weather station in the street, and an OOK receiver hearing nothing amplifies noise until its
+data line toggles continuously; on a chip that is also running WiFi that is worth bounding
+rather than assuming. A bridge nobody is teaching behaves exactly as it did before this
+existed.
+
 ### What it cannot know
 
 RTS is **one-way**. The motor never reports anything — not its position, not an
-acknowledgement, not its presence. Everything Home Assistant shows is inferred from what
-the bridge sent:
+acknowledgement, not its presence. Everything Home Assistant shows is inferred from what was
+transmitted, by us or by somebody's thumb:
 
 - After Up the cover reports open, after Down it reports closed. After a Stop it reports
   whichever it last was, because the protocol cannot say where it stopped.
-- If somebody uses the original handheld remote, the bridge has no idea.
 - A command lost to interference leaves Home Assistant optimistic and wrong until the next
   one. Five repeats per press help; certainty is not available.
+- Listening corrects the state, not the position. A heard Up means "opening", never "40 %
+  open", and a My pressed mid-travel stops the shutter somewhere nobody can compute.
+- The bridge cannot hear itself: one radio, and transmit and receive are different states.
 
 The entities are declared assumed-state for exactly this reason: Home Assistant shows both
 buttons at all times rather than hiding the one it believes is redundant.
@@ -117,6 +141,7 @@ for one. Everything under `/settings` is behind the same login.
 | Endpoint | Purpose |
 |---|---|
 | `GET /` | Operation: per-remote Up/My/Down, board status, live console |
+| `GET /controls` | Naming the physical handhelds and wall buttons. **Password.** |
 | `GET /api/state` | State as JSON, plus IP, RSSI, uptime, heap and queue depth. Polled by both pages |
 | `POST /api/send` | `?remote=<n>&command=Up\|My\|Down`. Refuses `Prog` |
 | `GET /status` | Snapshot: build stamp, reset reason, uptime, heap, WiFi, store, and a line per remote |
@@ -126,6 +151,13 @@ for one. Everything under `/settings` is behind the same login.
 | `POST /api/prog` | `?remote=<n>`. **Password.** Pairs or unpairs a motor |
 | `POST /api/remote/add` | `?address=<hex>` optional. **Password.** Starts not operational |
 | `POST /api/remote/flags` | `?remote=<n>&enabled=0\|1&operational=0\|1`. **Password.** |
+| `GET /api/heard` | Controls heard and controls named, plus receiver diagnostics. **Password.** |
+| `POST /api/receiver/arm` | `?minutes=<n>`, 0 to stop. **Password.** |
+| `POST /api/control/save` | `?address=<n>&name=<s>&drives=<i,j>`. **Password.** |
+| `POST /api/control/forget` | `?address=<n>`. **Password.** |
+
+Foreign RF addresses appear only behind the password. `/api/state` and `/status` are open
+and carry none, because an address is the credential of a motor.
 
 ```bash
 curl http://somfy-remote.local/status
@@ -151,7 +183,10 @@ connects, publishes happily, and no entity ever appears.
 | `<id>/health` | out — store diagnostics, retained |
 | `<discovery>cover/<id><n>_cover/config` | out — discovery, retained |
 | `<discovery>switch/<id><n>_my/config` | out — discovery, retained |
+| `<id>/control/<address>` | in/out — one learned control, retained |
+| `<id>/control/<address>/press` | out — a press heard from it. **The one topic that is not retained** |
 | `<discovery>sensor/<id><n>_code/config` | out — discovery, retained |
+| `<discovery>event/<id>_ctl_<address>/config` | out — discovery, retained |
 
 The bridge subscribes to `<id>/+/button` once rather than to each remote's topic in turn,
 and parses the remote number out of the topic.
@@ -204,11 +239,12 @@ about five seconds — on the IPv6 half before using the IPv4 answer it already 
 ## Layout
 
 ```
-include/        pure logic, header-only, unit tested — frame codec, pulse train,
-                topics, record store, configuration document, per-remote state
-lib/CC1101/     the radio driver: SPI, registers, transmit mode
-src/            peripherals and wiring: radio timing, WiFi/OTA, web UI, MQTT, flash
-                plus a standalone self-test with its own build env
+include/        pure logic, header-only, unit tested — frame codec and parser, pulse
+                train, pulse decoder, topics, record store, configuration document,
+                learned controls, per-remote state
+lib/CC1101/     the radio driver: SPI, registers, transmit and receive modes
+src/            peripherals and wiring: radio timing, the receive interrupt, WiFi/OTA,
+                web UI, MQTT, flash — plus a standalone self-test with its own build env
 test/           desktop unit tests (make test)
 tools/          bounded serial capture, privacy scan, config seeding
 ha/             Home Assistant side: the automation that publishes display names

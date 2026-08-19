@@ -11,6 +11,12 @@
 // that asks for one before it will tell you whether a shutter is shut is a page nobody
 // opens. Settings is the admin surface: pairing, adding and removing remotes. The browser
 // asks for a password the moment that page is opened.
+//
+// Controls is a third page and a sibling of settings rather than a section inside it. Same
+// password, different job: settings is administration done sitting down, and this is a tool
+// used walking around a house with a phone, pressing a button and naming what appears. It
+// is behind the password because the addresses on it are the RF credentials of the motors
+// in this house and the two log endpoints are already open.
 
 static const char PAGE_CSS[] PROGMEM = R"CSS(
 :root{--bg:#0e1116;--card:#171c24;--line:#262d38;--fg:#e6eaf0;--dim:#8b95a5;
@@ -61,6 +67,11 @@ footer{color:var(--dim);font-size:12px;text-align:center;margin-top:18px}
 footer a{color:var(--accent);text-decoration:none}
 .stale{opacity:.45}
 .warn{color:var(--warn);font-size:13px;margin:0 0 10px}
+.ticks{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.tick{display:flex;align-items:center;gap:5px;padding:5px 9px;border:1px solid var(--line);
+border-radius:8px;font-size:13px;color:var(--dim)}
+.tick input{accent-color:var(--accent);margin:0}
+.badge.ok{color:var(--ok);border-color:var(--ok)}
 )CSS";
 
 // --- operation ---------------------------------------------------------------------------
@@ -209,8 +220,8 @@ static const char SETTINGS_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
 
 <div id="remotes"></div>
 
-<footer><a href="/">operation</a> &middot; <a href="/status">status</a> &middot;
-<a href="/errors">faults</a></footer>
+<footer><a href="/">operation</a> &middot; <a href="/controls">controls</a> &middot;
+<a href="/status">status</a> &middot; <a href="/errors">faults</a></footer>
 </main>
 <script>
 const $ = id => document.getElementById(id);
@@ -305,5 +316,159 @@ async function setEnabled(n){
 
 poll();
 setInterval(poll, 3000);
+</script></body></html>
+)HTML";
+
+// The naming tool. Press a control anywhere in the house and its row arrives at the top
+// within a second, "just now"; type a name, tick the shutters it drives, save.
+//
+// There is deliberately no per-control mode to arm — nothing to point at the wrong thing,
+// and no order to remember. Pressing the same button twice does not make a second row, it
+// increments a count. Listening is one house-wide window, extended by any press heard, so
+// the walk cannot expire underneath somebody who left their phone in a pocket.
+//
+// The unknown list sorts newest-first for the walk with a phone, and oldest-first for the
+// other way of doing it: press everything in a systematic order, sit down, and name the
+// list top to bottom in the order you walked.
+static const char CONTROLS_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>somfy-remote &middot; controls</title>
+<link rel="stylesheet" href="/style.css"></head><body><main>
+<h1>controls <a href="/">operation</a></h1>
+
+<div class="card">
+  <div class="hdr"><b>Listening</b><span class="badge" id="state">&mdash;</span></div>
+  <p class="meta" id="rx"></p>
+  <div class="row" style="margin-top:10px">
+    <button onclick="arm(15)">15 min</button>
+    <button onclick="arm(60)">60 min</button>
+    <button class="danger" onclick="arm(0)">Stop</button>
+  </div>
+  <p class="meta">The window is extended by every press heard, so a walk with the phone in
+  a pocket does not run out.</p>
+</div>
+
+<div class="card">
+  <div class="hdr"><b>Heard, not named yet</b><span class="badge" id="n">0</span></div>
+  <p class="meta" id="empty">Nothing yet. Start listening, then press a control.</p>
+  <div class="row" style="margin-top:6px">
+    <button id="sortbtn" onclick="flip()">newest first</button>
+  </div>
+</div>
+<div id="unknown"></div>
+
+<div class="card"><div class="hdr"><b>Named</b><span class="badge" id="kn">0</span></div></div>
+<div id="known"></div>
+
+<footer><a href="/settings">settings</a> &middot; <a href="/status">status</a> &middot;
+<a href="/errors">faults</a></footer>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const CMD = {1:'My',2:'Up',3:'My+Up',4:'Down',5:'My+Down',6:'Up+Down',8:'Prog',9:'Sun',10:'Flag'};
+let names = [], newest = true, editing = null;
+
+const ago = ms => ms < 2000 ? 'just now'
+  : ms < 60000 ? Math.round(ms/1000) + 's ago'
+  : ms < 3600000 ? Math.round(ms/60000) + 'm ago' : Math.round(ms/3600000) + 'h ago';
+
+function flip(){ newest = !newest; $('sortbtn').textContent = newest ? 'newest first' : 'first heard first'; draw(last); }
+
+function ticks(addr, drives){
+  return names.map((n,i)=>`<label class="tick"><input type="checkbox" data-a="${addr}" value="${i}"
+    ${drives & (1<<i) ? 'checked' : ''}>${n||('Remote '+i)}</label>`).join('');
+}
+
+// Addresses that differ by one are almost always channels of the same handheld. It is a
+// hint for the person naming them and nothing more: which shutter a channel drives has no
+// relation to its number, and guessing that would be worse than leaving it blank.
+function neighbour(list, c){
+  return list.some(o => o.a !== c.a && Math.abs(o.a - c.a) <= 2)
+    ? '<p class="meta">looks like a channel of the same remote as its neighbour</p>' : '';
+}
+
+let last = null;
+function draw(s){
+  if (!s) return;
+  last = s;
+  $('state').textContent = s.armed ? s.left + 's left' : 'off';
+  $('state').className = 'badge ' + (s.armed ? 'ok' : '');
+  $('rx').textContent = `${s.edges}/s edges, ${s.frames} frames, ${s.presses} presses`
+    + (s.mutes ? `, ${s.mutes} mutes` : '') + (s.muted ? ' — MUTED, backing off' : '');
+
+  const u = s.heard.slice().sort((a,b)=> newest ? b.last - a.last : a.first - b.first);
+  $('n').textContent = u.length;
+  $('empty').style.display = u.length ? 'none' : '';
+  $('unknown').innerHTML = u.map(c=>`
+    <div class="card">
+      <div class="hdr"><b>${ago(c.last)}</b><span class="badge">${CMD[c.cmd]||('0x'+c.cmd.toString(16))}</span></div>
+      <div class="meta">${c.n} press${c.n===1?'':'es'} &middot; code ${c.code}</div>
+      ${neighbour(u,c)}
+      <div class="row" style="margin-top:8px">
+        <input id="nm${c.a}" placeholder="name this control" value="">
+        <button style="flex:0 0 74px" onclick="save(${c.a})">Save</button>
+      </div>
+      <div class="ticks">${ticks(c.a,0)}</div>
+      <div class="row" style="margin-top:8px">
+        <button class="danger" onclick="drop(${c.a})">Ignore</button>
+      </div>
+    </div>`).join('');
+
+  $('kn').textContent = s.known.length;
+  $('known').innerHTML = s.known.map(c=>`
+    <div class="card">
+      <div class="hdr"><b>${c.name}</b></div>
+      <div class="row" style="margin-top:8px">
+        <input id="nm${c.a}" value="${c.name}">
+        <button style="flex:0 0 74px" onclick="save(${c.a})">Save</button>
+      </div>
+      <div class="ticks">${ticks(c.a,c.d)}</div>
+      <div class="row" style="margin-top:8px">
+        <button class="danger" onclick="forget(${c.a})">Forget</button>
+      </div>
+    </div>`).join('');
+}
+
+async function arm(m){
+  await fetch('/api/receiver/arm?minutes=' + m, {method:'POST'});
+  poll();
+}
+
+async function save(a){
+  const name = $('nm'+a).value.trim();
+  if (!name) { alert('give it a name first'); return; }
+  const d = [...document.querySelectorAll(`input[data-a="${a}"]:checked`)].map(e=>e.value).join(',');
+  const r = await fetch(`/api/control/save?address=${a}&name=${encodeURIComponent(name)}&drives=${d}`,
+                        {method:'POST'});
+  // A save that did not reach the broker is a save that is gone on the next restart, and
+  // the retained topic is the only durable copy of an hour of walking.
+  if (!r.ok) alert('NOT saved: ' + (await r.text()));
+  poll();
+}
+
+async function forget(a){
+  if (!confirm('Forget this control?')) return;
+  const r = await fetch('/api/control/forget?address=' + a, {method:'POST'});
+  if (!r.ok) alert('NOT forgotten: ' + (await r.text()));
+  poll();
+}
+
+async function drop(a){
+  await fetch('/api/control/ignore?address=' + a, {method:'POST'});
+  poll();
+}
+
+async function poll(){
+  try {
+    const s = await (await fetch('/api/heard')).json();
+    names = s.names;
+    draw(s);
+  } catch (e) {}
+}
+poll();
+setInterval(poll, 1000);
 </script></body></html>
 )HTML";
