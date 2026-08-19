@@ -49,7 +49,6 @@ class WebUi {
   void handleRemoteFlags();
   void handleControls();
   void handleHeard();
-  void handleArm();
   void handleControlSave();
   void handleControlForget();
   void handleControlIgnore();

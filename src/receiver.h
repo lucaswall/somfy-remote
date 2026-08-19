@@ -9,19 +9,18 @@
 // Hearing the handhelds already in the house, so a shutter opened by hand stops reading
 // closed in Home Assistant.
 //
-// **Inert until armed**, and the window expires by itself. An OOK receiver with no signal
-// amplifies noise until the data line chatters, and an unbounded edge interrupt on a chip
-// running WiFi is a way to starve the SDK. Whether it is safe left on for ever is a
-// measurement nobody has taken.
+// Always listening. An OOK receiver whose AGC is misconfigured amplifies noise until the
+// data pin chatters, which is a real way to starve the SDK on a chip that also runs WiFi —
+// the rate limiter is the guard against that, not a human remembering to switch it on.
 
 // Forty, because a naming walk may press every control in the house before naming any of
 // them, and evicting the start of that walk loses rows nobody knows are missing.
 #define SIGHTING_SLOTS 40
 
-// The last intervals the decoder was fed, circular and always running — a one-shot capture
-// would have to be armed before the thing worth capturing, which nobody can time from a web
-// page. It exists because a decoder rejecting everything and a radio hearing nothing produce
-// identical counters. Two bytes each, level in the top bit.
+// The last intervals the decoder was fed, circular — a one-shot capture would have to be
+// started before the thing worth capturing, which nobody can time from a web page. It exists
+// because a decoder rejecting everything and a radio hearing nothing produce identical
+// counters. Two bytes each, level in the top bit.
 #define CAPTURE_SLOTS 192
 
 // What the bridge has heard from one address it does not know yet.
@@ -38,17 +37,11 @@ class Receiver {
  public:
   Receiver(SomfyRadio &radio, Remotes &remotes) : _radio(radio), _remotes(remotes) {}
 
-  // The data pin the radio shares between transmit and receive. Nothing is armed by this;
-  // it only records which wire to watch.
+  // Records which wire to watch. Listening starts from loop(), once the radio is configured.
   void begin(uint8_t dataPin);
 
-  // Listen for `minutes`, then stop. Arming again extends the window without restarting the
-  // radio, and a heard press extends it too; neither can shorten it.
-  bool arm(uint16_t minutes);
-  void disarm();
-
-  bool armed() const { return _armed; }
-  uint32_t secondsLeft() const;
+  // False while the rate limiter is backing off after a noise storm.
+  bool listening() const { return _attached; }
 
   void loop();
 
@@ -122,11 +115,9 @@ class Receiver {
   uint32_t _lastEntry = 0;
   bool _haveLastEntry = false;
   uint8_t _dataPin = 0;
-  bool _armed = false;
   bool _attached = false;
   bool _cooling = false;
   bool _suspended = false;
-  uint32_t _expiresAt = 0;
   uint32_t _blankUntil = 0;
   uint32_t _muteUntil = 0;
   uint32_t _backoffMs = 1000;

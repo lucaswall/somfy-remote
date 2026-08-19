@@ -34,9 +34,6 @@
 
 #define PRESS_SLOTS 4
 
-// Long enough to walk to the far end of a house and back before the window closes.
-#define PRESS_EXTENDS_MS (10UL * 60 * 1000)
-
 static volatile uint32_t ringEntries[RING_SIZE];
 static volatile uint16_t ringHead = 0;
 static uint16_t ringTail = 0;   // written only by the main loop
@@ -108,53 +105,6 @@ void Receiver::begin(uint8_t dataPin) {
   isrPin = dataPin;
 }
 
-bool Receiver::arm(uint16_t minutes) {
-  if (!_radio.ready()) {
-    logError("receiver  : radio is not ready, cannot listen");
-    return false;
-  }
-
-  // Only ever forward, so topping up a longer window cannot shorten it.
-  const uint32_t until = millis() + (uint32_t)minutes * 60000UL;
-  if (!_armed || (int32_t)(until - _expiresAt) > 0) {
-    _expiresAt = until;
-  }
-  if (_armed) {
-    return true;   // extending the window, not restarting the radio mid-frame
-  }
-
-  _armed = true;
-  _cooling = false;
-  _backoffMs = 1000;
-  _decoder.reset();
-  // Mid-transmission is the one case where not attaching is correct; resume() does it.
-  if (!_suspended && !attach()) {
-    _armed = false;
-    return false;
-  }
-  logLine("receiver  : listening for %u minutes", minutes);
-  return true;
-}
-
-void Receiver::disarm() {
-  if (!_armed) {
-    return;
-  }
-  _armed = false;
-  _cooling = false;
-  _edgeRate = 0;   // nothing is counting it any more
-  detach();
-  logLine("receiver  : stopped listening");
-}
-
-uint32_t Receiver::secondsLeft() const {
-  if (!_armed) {
-    return 0;
-  }
-  const uint32_t now = millis();
-  return (int32_t)(_expiresAt - now) > 0 ? (uint32_t)(_expiresAt - now) / 1000 : 0;
-}
-
 // **The pin turns round here, and the order is the safety argument.** The chip's driver is
 // 3-stated before the ESP's is switched on, and off before the chip's comes back; two
 // push-pull outputs on one wire is a short.
@@ -200,7 +150,7 @@ void Receiver::detach() {
   pinMode(_dataPin, OUTPUT);
 }
 
-// Resume restores what suspend found: disarmed stays disarmed, cooling stays cooling.
+// Resume restores what suspend found: a receiver that was cooling stays cooling.
 void Receiver::suspend() {
   _suspended = true;
   detach();
@@ -208,7 +158,7 @@ void Receiver::suspend() {
 
 void Receiver::resume() {
   _suspended = false;
-  if (!_armed || _cooling) {
+  if (_cooling) {
     return;
   }
   if (!attach()) {
@@ -222,12 +172,16 @@ void Receiver::resume() {
 void Receiver::loop() {
   const uint32_t now = millis();
 
-  if (_armed && (int32_t)(now - _expiresAt) >= 0) {
-    disarm();
+  if (_suspended) {
     return;
   }
-  if (!_armed || _suspended) {
-    return;
+
+  // Attached here rather than in begin(), and only once the chip is configured: SRES leaves
+  // a 135 kHz divided crystal clock on GDO0 until configure() runs, which is a hundred
+  // thousand interrupts a second straight into the handler. This also re-attaches by itself
+  // after a radio recovery.
+  if (!_attached && !_cooling && _radio.ready()) {
+    attach();
   }
 
   enforceRateLimit(now);
@@ -260,8 +214,8 @@ void Receiver::enforceRateLimit(uint32_t now) {
 
   if (_cooling && (int32_t)(now - _muteUntil) >= 0) {
     if (!attach()) {
-      // Stay cooling rather than sit armed with nothing listening: a receiver that has
-      // silently stopped is indistinguishable from a quiet house.
+      // Stay cooling rather than sit with nothing listening: a receiver that has silently
+      // stopped is indistinguishable from a quiet house.
       _muteUntil = now + _backoffMs;
       _backoffMs = _backoffMs * 2 > 60000UL ? 60000UL : _backoffMs * 2;
       return;
@@ -371,13 +325,6 @@ void Receiver::applyEdges() {
 
 void Receiver::recordSighting(const SomfyPress &press) {
   const uint32_t now = millis();
-
-  // During a naming walk with the page in a pocket, a press is the only sign anybody is
-  // still working; without this the window expires mid-house.
-  const uint32_t extended = now + PRESS_EXTENDS_MS;
-  if (_armed && (int32_t)(extended - _expiresAt) > 0) {
-    _expiresAt = extended;
-  }
 
   for (uint8_t i = 0; i < _sightingCount; i++) {
     if (_sightings[i].address == press.address) {

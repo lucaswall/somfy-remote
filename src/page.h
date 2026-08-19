@@ -346,12 +346,7 @@ static const char CONTROLS_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
 <h1>controls <a href="/">operation</a></h1>
 
 <div class="card">
-  <div class="hdr"><b>Listening</b><span class="badge" id="state">&mdash;</span></div>
-  <div class="row" style="margin-top:8px">
-    <button onclick="arm(15)">15 min</button>
-    <button onclick="arm(60)">60 min</button>
-    <button class="danger" onclick="arm(0)">Stop</button>
-  </div>
+  <div class="hdr"><b>Receiver</b><span class="badge" id="state">&mdash;</span></div>
   <p class="meta" id="rx"></p>
 </div>
 
@@ -415,8 +410,8 @@ function counter(a){
 function draw(s){
   if (!s) return;
   last = s;
-  $('state').textContent = s.armed ? ago(s.left*1000) + ' left' : 'off';
-  $('state').className = 'badge ' + (s.armed ? 'ok' : '');
+  $('state').textContent = s.listening ? 'listening' : 'backing off';
+  $('state').className = 'badge ' + (s.listening ? 'ok' : '');
   $('rx').textContent = `${s.edges}/s · ${s.frames} frames · ${s.presses} presses`
     + (s.abandoned || s.badsum ? ` · ${s.abandoned} abandoned, ${s.badsum} bad sum` : '')
     + (s.muted ? ' · MUTED' : '');
@@ -454,8 +449,6 @@ function draw(s){
 
 function pick(a){ open = (open === a) ? null : a; sig = ''; draw(last); }
 function flip(){ newest = !newest; $('sortbtn').textContent = newest ? 'newest first' : 'walk order'; sig=''; draw(last); }
-
-async function arm(m){ await fetch('/api/receiver/arm?minutes='+m,{method:'POST'}); poll(); }
 
 async function save(a){
   const name = $('nm'+a).value.trim();

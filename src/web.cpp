@@ -101,7 +101,6 @@ void WebUi::start() {
   _server.on("/api/remote/flags", HTTP_POST, [this]() { handleRemoteFlags(); });
   _server.on("/controls", HTTP_GET, [this]() { handleControls(); });
   _server.on("/api/heard", HTTP_GET, [this]() { handleHeard(); });
-  _server.on("/api/receiver/arm", HTTP_POST, [this]() { handleArm(); });
   _server.on("/api/control/save", HTTP_POST, [this]() { handleControlSave(); });
   _server.on("/api/control/forget", HTTP_POST, [this]() { handleControlForget(); });
   _server.on("/api/control/ignore", HTTP_POST, [this]() { handleControlIgnore(); });
@@ -186,10 +185,10 @@ void WebUi::handleHeard() {
   Chunked out(_server);
 
   snprintf(chunk, sizeof(chunk),
-           "{\"armed\":%s,\"left\":%lu,\"edges\":%lu,\"frames\":%lu,\"presses\":%lu,"
+           "{\"listening\":%s,\"edges\":%lu,\"frames\":%lu,\"presses\":%lu,"
            "\"mutes\":%u,\"muted\":%s,\"overflows\":%lu,\"abandoned\":%lu,"
            "\"badsum\":%lu,\"heard\":[",
-           _receiver.armed() ? "true" : "false", (unsigned long)_receiver.secondsLeft(),
+           _receiver.listening() ? "true" : "false",
            (unsigned long)_receiver.edgesPerSecond(), (unsigned long)rx.frames,
            (unsigned long)rx.presses, rx.mutes, rx.muted ? "true" : "false",
            (unsigned long)rx.overflows, (unsigned long)rx.abandoned,
@@ -234,28 +233,6 @@ void WebUi::handleHeard() {
   out.add("]}");
   out.flush();
   _server.sendContent("");
-}
-
-// Zero stops; anything else starts or extends without restarting the radio mid-frame.
-void WebUi::handleArm() {
-  if (!sameOrigin() || !settingsAuthorised()) {
-    return;
-  }
-  const long minutes = _server.arg("minutes").toInt();
-  if (minutes <= 0) {
-    _receiver.disarm();
-    _server.send(200, "text/plain", "stopped\n");
-    return;
-  }
-  if (minutes > 240) {
-    _server.send(400, "text/plain", "at most 240 minutes\n");
-    return;
-  }
-  if (!_receiver.arm((uint16_t)minutes)) {
-    _server.send(503, "text/plain", "the radio is not ready\n");
-    return;
-  }
-  _server.send(200, "text/plain", "listening\n");
 }
 
 void WebUi::handleControlSave() {
@@ -708,14 +685,14 @@ void WebUi::handleStatus() {
   const Receiver::Stats rx = _receiver.stats();
   snprintf(line, sizeof(line),
            "receiver: %s  %lu edges/s  %lu frames  %lu presses  %u known\n",
-           _receiver.armed() ? (rx.muted ? "MUTED" : "listening") : "off",
+           _receiver.listening() ? "listening" : "MUTED",
            (unsigned long)_receiver.edgesPerSecond(), (unsigned long)rx.frames,
            (unsigned long)rx.presses, _mqtt.controls().count());
   out.add(line);
   snprintf(line, sizeof(line),
-           "        : %lus left, %lu int, %lu ring, %lu overflow, %lu abandoned, "
+           "        : %lu int, %lu ring, %lu overflow, %lu abandoned, "
            "%lu bad checksum, %u mutes, peak %u/10ms, %lu level repeats%s\n",
-           (unsigned long)_receiver.secondsLeft(), (unsigned long)rx.interrupts,
+           (unsigned long)rx.interrupts,
            (unsigned long)rx.ringWrites, (unsigned long)rx.overflows,
            (unsigned long)rx.abandoned, (unsigned long)rx.badChecksum, rx.mutes,
            (unsigned)rx.peakRate, (unsigned long)rx.levelRepeats,
