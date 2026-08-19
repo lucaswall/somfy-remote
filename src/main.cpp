@@ -8,6 +8,7 @@
 
 #include <Arduino.h>
 
+#include "build_info.h"
 #include "log.h"
 
 #include "ha_mqtt.h"
@@ -59,7 +60,7 @@ static uint32_t lastHealth = 0;
 static void banner() {
   Serial.println();
   logLine("=== somfy-remote ===");
-  logLine("build     : %s %s", __DATE__, __TIME__);
+  logLine("build     : %s", BUILD_STAMP);
   logLine("host      : %s", HOST);
   logLine("heap      : %u bytes", ESP.getFreeHeap());
   logLine("reset     : %s", ESP.getResetReason().c_str());

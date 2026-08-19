@@ -32,6 +32,17 @@ class RemoteState {
     // gives a position we could report, so the last one stands.
   }
 
+  // Seeds the position from Home Assistant's retained copy at boot. Deliberately not
+  // record(): nothing was transmitted, so the version must not advance and no press should
+  // be implied. Without this the device forgets where every shutter is on each reboot and
+  // reports `unknown` while Home Assistant still shows the truth, which is two answers to
+  // one question.
+  void restore(CoverPosition position) {
+    if (_position == COVER_UNKNOWN) {
+      _position = position;
+    }
+  }
+
   CoverPosition position() const { return _position; }
   SomfyCommand last() const { return _last; }
 

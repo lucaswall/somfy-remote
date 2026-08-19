@@ -143,6 +143,8 @@ static void new_topics_are_shaped_as_documented(void) {
   TEST_ASSERT_EQUAL_STRING("wemos_somfy_remote/code/+", buf);
   topicNames(buf, sizeof(buf), "wemos_somfy_remote");
   TEST_ASSERT_EQUAL_STRING("wemos_somfy_remote/names", buf);
+  topicHealth(buf, sizeof(buf), "wemos_somfy_remote");
+  TEST_ASSERT_EQUAL_STRING("wemos_somfy_remote/health", buf);
 }
 
 // A mis-parse here raises the wrong remote's counter, which is unrecoverable in the

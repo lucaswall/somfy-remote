@@ -4,6 +4,7 @@
 #include <ArduinoJson.h>
 #include <ESP8266WiFi.h>
 
+#include "build_info.h"
 #include "log.h"
 #include "secrets.h"
 #include "timing.h"
@@ -40,6 +41,10 @@ static const uint32_t MAX_ADOPT_JUMP = 1000;
 // test_config_doc pins below 2048. The default 256 does not fit a discovery payload
 // either.
 static const uint16_t MQTT_BUFFER = 2048;
+
+// Diagnostics are retained, so a slow cadence still leaves Home Assistant with a current
+// value; this only decides how quickly a developing fault becomes visible.
+static const uint32_t HEALTH_PUBLISH_MS = 60000;
 
 // snprintf truncates silently, and two truncated topics are one topic: remote 2 and
 // remote 21 would share a command topic and move together. The longest this firmware
@@ -130,6 +135,11 @@ void HaMqtt::loop() {
     }
     publishCounter(i);
   }
+
+  if (elapsed(millis(), _lastHealth, HEALTH_PUBLISH_MS)) {
+    _lastHealth = millis();
+    publishHealth();
+  }
 }
 
 // The floor, enforced on the way out. A press only ever raises a counter, so a publish
@@ -182,6 +192,12 @@ bool HaMqtt::connect() {
   _mqtt.subscribe(topic);
   topicNames(topic, sizeof(topic), MQTT_DEVICE_ID);
   _mqtt.subscribe(topic);
+  // Our own retained cover state, read back. The device infers position from what it
+  // transmitted and holds it in RAM, so every reboot and every OTA used to throw it away —
+  // while Home Assistant kept it. Reading it back is the same trick as the counters: the
+  // durable copy lives off the board.
+  snprintf(topic, sizeof(topic), "%s/+/state", MQTT_DEVICE_ID);
+  _mqtt.subscribe(topic);
 
   _haveStaged = false;
   for (uint8_t i = 0; i < rs::MAX_REMOTES; i++) {
@@ -226,6 +242,9 @@ void HaMqtt::finishReconcile() {
     publishState(i);
     publishCounter(i);
   }
+
+  publishBridgeDiscovery();
+  publishHealth();
 
   char availability[TOPIC_LEN];
   topicAvailability(availability, sizeof(availability), MQTT_DEVICE_ID);
@@ -455,6 +474,14 @@ void HaMqtt::publishDiscovery(uint8_t remote) {
 
   // Every string handed to ArduinoJson below is a char array, which it copies. Passing a
   // const char* instead would store the pointer, and these all go out of scope here.
+  // Three entities per remote: the cover, the My switch, and the rolling code as a
+  // diagnostic sensor.
+  //
+  // Prog is deliberately not among them. Home Assistant mirrors what the bridge *does* —
+  // open, stop, close — not how it is configured, and pairing a remote to a motor is
+  // configuration. It lives on the device's own settings page, behind a password, next to
+  // the address it pairs. A one-tap unconfirmed button in a dashboard is the wrong home
+  // for the one action here that cannot be undone by pressing something else.
   for (uint8_t entity = 0; entity < 3; entity++) {
     JsonDocument doc;
     JsonObject device = doc["device"].to<JsonObject>();
@@ -462,7 +489,7 @@ void HaMqtt::publishDiscovery(uint8_t remote) {
     device["name"] = name;
     device["model"] = "Wemos Somfy Remote";
     device["manufacturer"] = "MLCM Tech";
-    device["sw_version"] = __DATE__;
+    device["sw_version"] = BUILD_STAMP;
     device["configuration_url"] = url;
 
     doc["availability_topic"] = availability;
@@ -470,14 +497,22 @@ void HaMqtt::publishDiscovery(uint8_t remote) {
 
     const char *component = nullptr;
     switch (entity) {
-      case 0:
-        // Prog. Held down, it enrolls this emulated remote with a motor, which is the one
-        // action here that changes something physical and permanent.
-        component = "button";
-        uniqueId(object, sizeof(object), MQTT_DEVICE_ID, remote, "prog");
-        doc["name"] = "Prog";
-        doc["payload_press"] = "Prog";
+      case 0: {
+        // The rolling code, as a diagnostic. It is the number that cannot be regenerated,
+        // and a counter that stops advancing while presses are still logged is exactly
+        // what a flash that has stopped accepting writes looks like from outside.
+        component = "sensor";
+        uniqueId(object, sizeof(object), MQTT_DEVICE_ID, remote, "code");
+        char code[TOPIC_LEN];
+        topicCode(code, sizeof(code), MQTT_DEVICE_ID, remote);
+        doc["name"] = "Rolling code";
+        doc["state_topic"] = code;
+        doc["entity_category"] = "diagnostic";
+        doc["state_class"] = "total_increasing";
+        doc["icon"] = "mdi:counter";
+        doc.remove("command_topic");   // nothing to command: this one only reports
         break;
+      }
       case 1:
         // My as a switch rather than a button, because Google Home does not expose
         // buttons usefully. Both payloads are the same press; state_on and state_off are
@@ -503,17 +538,24 @@ void HaMqtt::publishDiscovery(uint8_t remote) {
         doc["payload_open"] = "Up";
         doc["payload_close"] = "Down";
         doc["payload_stop"] = "My";
+        // Without this Home Assistant treats them as generic covers: generic icon, generic
+        // open/closed vocabulary. They are shutters.
+        doc["device_class"] = "shutter";
         // RTS is one-way. Home Assistant shows both buttons at all times rather than
         // hiding the one it thinks is redundant, because what it thinks may be wrong.
         //
-        // `optimistic` is the documented key for that, and the only one to rely on. The
-        // 2023 sketch asked for it as `assumed_state`, which is what the attribute is
-        // called on the entity but is not in the MQTT cover schema; the running
-        // installation does set the attribute from it, so it is tolerated today rather
-        // than dropped. Tolerated is not promised — an undocumented key that a stricter
-        // schema later rejects takes the whole discovery config with it, and twelve
-        // covers with it. State still arrives on the state topic either way: optimistic
-        // only means the entity moves on the command instead of waiting for us.
+        // `optimistic` is the documented key for that. The 2023 sketch asked for it as
+        // `assumed_state`, which is what the attribute is called on the entity but is not
+        // in the MQTT cover schema, so discovery drops it.
+        //
+        // That was not obvious from the installation: its covers did report the attribute,
+        // but from a `customize_glob` in Home Assistant's configuration.yaml rather than
+        // from the payload — which is exactly the workaround you would expect somebody to
+        // have added once the discovery key silently did nothing. Reading the live entity
+        // alone suggests the key works; it does not.
+        //
+        // State still arrives on the state topic either way: optimistic only means the
+        // entity moves on the command instead of waiting for us.
         doc["optimistic"] = true;
         break;
     }
@@ -534,6 +576,81 @@ void HaMqtt::publishDiscovery(uint8_t remote) {
                (unsigned)written);
     }
   }
+}
+
+// One extra Home Assistant device for the bridge itself, carrying what the store is doing.
+// Separate from the twelve remotes because it is not about any one shutter.
+void HaMqtt::publishBridgeDiscovery() {
+  char availability[TOPIC_LEN], health[TOPIC_LEN];
+  topicAvailability(availability, sizeof(availability), MQTT_DEVICE_ID);
+  topicHealth(health, sizeof(health), MQTT_DEVICE_ID);
+  char url[48];
+  snprintf(url, sizeof(url), "http://%s/", WiFi.localIP().toString().c_str());
+
+  static const char *const KEY[4] = {"free", "spent", "sector", "heap"};
+  static const char *const LABEL[4] = {"Store free slots", "Store faults", "Store sector",
+                                       "Free heap"};
+  static const char *const ICON[4] = {"mdi:database", "mdi:alert-circle-outline",
+                                      "mdi:database-marker", "mdi:memory"};
+
+  char object[OBJECT_ID_LEN], topic[DISCOVERY_TOPIC_LEN], payload[PAYLOAD_LEN];
+  for (uint8_t i = 0; i < 4; i++) {
+    JsonDocument doc;
+    JsonObject device = doc["device"].to<JsonObject>();
+    device["identifiers"][0] = MQTT_DEVICE_ID;
+    device["name"] = "Somfy Bridge";
+    device["model"] = "Wemos Somfy Remote";
+    device["manufacturer"] = "MLCM Tech";
+    device["sw_version"] = BUILD_STAMP;
+    device["configuration_url"] = url;
+
+    doc["availability_topic"] = availability;
+    doc["state_topic"] = health;
+    doc["name"] = LABEL[i];
+    doc["icon"] = ICON[i];
+    doc["entity_category"] = "diagnostic";
+    char tmpl[40];
+    snprintf(tmpl, sizeof(tmpl), "{{ value_json.%s }}", KEY[i]);
+    doc["value_template"] = tmpl;
+
+    snprintf(object, sizeof(object), "%s_%s", MQTT_DEVICE_ID, KEY[i]);
+    doc["unique_id"] = object;
+    discoveryTopic(topic, sizeof(topic), HA_DISCOVERY_PREFIX, "sensor", object);
+    const size_t written = serializeJson(doc, payload, sizeof(payload));
+    if (written < sizeof(payload) - 1) {
+      _mqtt.publish(topic, payload, true);
+    }
+  }
+
+  // The one that matters enough to be a problem rather than a number.
+  JsonDocument doc;
+  JsonObject device = doc["device"].to<JsonObject>();
+  device["identifiers"][0] = MQTT_DEVICE_ID;
+  device["name"] = "Somfy Bridge";
+  doc["availability_topic"] = availability;
+  doc["state_topic"] = health;
+  doc["name"] = "Store degraded";
+  doc["entity_category"] = "diagnostic";
+  doc["device_class"] = "problem";
+  doc["value_template"] = "{{ 'ON' if value_json.degraded else 'OFF' }}";
+  snprintf(object, sizeof(object), "%s_degraded", MQTT_DEVICE_ID);
+  doc["unique_id"] = object;
+  discoveryTopic(topic, sizeof(topic), HA_DISCOVERY_PREFIX, "binary_sensor", object);
+  const size_t written = serializeJson(doc, payload, sizeof(payload));
+  if (written < sizeof(payload) - 1) {
+    _mqtt.publish(topic, payload, true);
+  }
+}
+
+void HaMqtt::publishHealth() {
+  char topic[TOPIC_LEN], payload[192];
+  topicHealth(topic, sizeof(topic), MQTT_DEVICE_ID);
+  snprintf(payload, sizeof(payload),
+           "{\"free\":%u,\"spent\":%u,\"sector\":\"%c\",\"heap\":%u,"
+           "\"degraded\":%s,\"epoch\":%lu}",
+           _store.freeSlots(), _store.spent(), _store.activeName(), ESP.getFreeHeap(),
+           _store.degraded() ? "true" : "false", (unsigned long)_config.epoch);
+  _mqtt.publish(topic, payload, true);
 }
 
 void HaMqtt::publishState(uint8_t remote) {
@@ -570,6 +687,26 @@ void HaMqtt::onMessage(const char *topic, const uint8_t *payload, unsigned int l
     }
     _remotes.queue(remote, command);
     return;
+  }
+
+  // "<id>/remote<n>/state" — our own retained publication, coming back to us on subscribe.
+  {
+    const size_t idLength = strlen(MQTT_DEVICE_ID);
+    if (strncmp(topic, MQTT_DEVICE_ID, idLength) == 0) {
+      char expectedState[TOPIC_LEN];
+      for (uint8_t i = 0; i < _remotes.count(); i++) {
+        topicCoverState(expectedState, sizeof(expectedState), MQTT_DEVICE_ID, i);
+        if (strcmp(topic, expectedState) != 0) {
+          continue;
+        }
+        if (length == 4 && memcmp(payload, "open", 4) == 0) {
+          _remotes.restoreState(i, COVER_OPEN);
+        } else if (length == 6 && memcmp(payload, "closed", 6) == 0) {
+          _remotes.restoreState(i, COVER_CLOSED);
+        }
+        return;
+      }
+    }
   }
 
   if (remoteFromCodeTopic(topic, MQTT_DEVICE_ID, &remote)) {

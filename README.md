@@ -29,11 +29,19 @@ One Home Assistant device per emulated remote, three entities each:
 - **Cover** — Up, Down and Stop, with Stop wired to the remote's My button
 - **My** — a switch rather than a button, because Google Home does not surface buttons
   usefully. It reports itself back off after each press
-- **Prog** — a button. Held on a paired remote it enrolls the next one; sent to a motor
-  that already knows this address, it removes it
+- **Rolling code** — a diagnostic sensor. A counter that stops advancing while presses are
+  still being logged is what a flash that has stopped accepting writes looks like from
+  outside, and that is worth an alert rather than a glance at a web page
 
-Plus a retained availability topic backed by an MQTT last will, so a crashed bridge shows
-as unavailable rather than as shutters that have quietly stopped responding.
+Plus a `Somfy Bridge` device carrying store diagnostics, and a retained availability topic
+backed by an MQTT last will, so a crashed bridge shows as unavailable rather than as
+shutters that have quietly stopped responding.
+
+**Pairing is deliberately not here.** Home Assistant mirrors what the bridge *does* — open,
+stop, close — not how it is configured, and enrolling a remote at a motor is configuration.
+Prog lives on the device's own settings page, behind a password, next to the address it
+pairs. A one-tap unconfirmed button on a dashboard is the wrong home for the one action
+that cannot be undone by pressing something else.
 
 ### What it cannot know
 

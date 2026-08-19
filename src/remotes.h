@@ -44,6 +44,11 @@ class Remotes {
   }
   uint8_t pending() const { return _queue.count(); }
   const RemoteState &state(uint8_t remote) const { return _states[remote]; }
+  void restoreState(uint8_t remote, CoverPosition position) {
+    if (remote < rs::MAX_REMOTES) {
+      _states[remote].restore(position);
+    }
+  }
 
   uint32_t addressOf(uint8_t remote) const;
   bool enabled(uint8_t remote) const;

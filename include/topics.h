@@ -136,6 +136,15 @@ inline void topicNames(char *out, size_t len, const char *deviceId) {
   snprintf(out, len, "%s/names", deviceId);
 }
 
+// "<deviceId>/health" — the bridge's own diagnostics, retained. Not a control surface:
+// Home Assistant mirrors what the bridge *does*, and this is what it *is*. A rolling code
+// that stops advancing while presses are still being logged is the signature of a flash
+// that has stopped accepting writes, and that is worth a graph and an alert rather than a
+// glance at a web page.
+inline void topicHealth(char *out, size_t len, const char *deviceId) {
+  snprintf(out, len, "%s/health", deviceId);
+}
+
 // "<deviceId>/status" — online / offline, retained, and the broker's last will.
 inline void topicAvailability(char *out, size_t len, const char *deviceId) {
   snprintf(out, len, "%s/status", deviceId);

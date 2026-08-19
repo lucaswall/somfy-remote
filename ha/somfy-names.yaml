@@ -9,7 +9,11 @@
 # keeps the bridge's reach at exactly the twelve shutters it already drives.
 #
 # The device treats names as display only. Nothing here keys anything: every internal path
-# is the remote index, and a remote with no name published simply reads as its index.
+# is the remote index.
+#
+# The index comes from the MQTT **device identifier**, not from slicing the entity id. An
+# entity id can be renamed from the Home Assistant UI; the identifier the bridge publishes
+# cannot, so a rename cannot silently stop names updating.
 
 - id: somfy_remote_publish_names
   alias: Somfy bridge — publish display names
@@ -29,6 +33,10 @@
       event_type: entity_registry_updated
       event_data:
         action: update
+    - trigger: event
+      event_type: device_registry_updated
+      event_data:
+        action: update
   conditions: []
   actions:
     # Settled, or a restart publishes names from before the registry has finished loading.
@@ -39,13 +47,16 @@
         retain: true
         payload: >-
           {% set ns = namespace(items=[]) %}
-          {% for state in states.cover
-             if state.entity_id.startswith('cover.somfy_remote') %}
-            {% set index = state.entity_id
-                 | replace('cover.somfy_remote', '') %}
-            {% if index is match('^[0-9]+$') %}
-              {% set ns.items = ns.items + [
-                   '"' ~ index ~ '":' ~ (state.name | tojson) ] %}
-            {% endif %}
+          {% for e in states.cover %}
+            {% for ident in device_attr(e.entity_id, 'identifiers') or [] %}
+              {% if ident[1] is string
+                    and ident[1].startswith('wemos_somfy_remote') %}
+                {% set idx = ident[1] | replace('wemos_somfy_remote', '') %}
+                {% if idx is match('^[0-9]+$') %}
+                  {% set ns.items = ns.items + [
+                       '"' ~ idx ~ '":' ~ (e.name | tojson) ] %}
+                {% endif %}
+              {% endif %}
+            {% endfor %}
           {% endfor %}
           {{ '{' ~ ns.items | join(',') ~ '}' }}

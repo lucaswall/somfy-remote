@@ -4,6 +4,7 @@
 #include <ESP8266mDNS.h>
 #include <stdlib.h>
 
+#include "build_info.h"
 #include "config_doc.h"
 #include "log.h"
 #include "page.h"
@@ -350,7 +351,7 @@ void WebUi::handleStatus() {
 
   snprintf(body, sizeof(body),
            "host    : %s\n"
-           "build   : %s %s\n"
+           "build   : %s\n"
            "reset   : %s\n"
            "uptime  : %luh %02lum %02lus\n"
            "heap    : %u free\n"
@@ -359,7 +360,7 @@ void WebUi::handleStatus() {
            "store   : sector %c gen %lu, %u free slots, %u spent%s%s\n"
            "config  : epoch %lu by %s\n"
            "log     : %u of %u lines, %u faults\n",
-           _hostname, __DATE__, __TIME__, ESP.getResetReason().c_str(),
+           _hostname, BUILD_STAMP, ESP.getResetReason().c_str(),
            (unsigned long)(up / 3600), (unsigned long)((up / 60) % 60),
            (unsigned long)(up % 60), ESP.getFreeHeap(),
            _net.connected() ? "up" : "down", WiFi.localIP().toString().c_str(),
