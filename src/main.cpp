@@ -59,6 +59,13 @@ static uint32_t heapLowWater = 0;
 static const uint32_t HEALTH_MS = 5UL * 60 * 1000;
 static uint32_t lastHealth = 0;
 
+// How fast the loop is turning, averaged over each health interval. It exists to answer one
+// question that cannot be answered any other way: what the receiver's interrupt handler is
+// costing. An ISR firing a few hundred times a second is invisible in every other number on
+// this board, and a comparison against the same figure with the receiver disarmed is the
+// only honest way to price it.
+static uint32_t loops = 0;
+
 static void banner() {
   Serial.println();
   logLine("=== somfy-remote ===");
@@ -108,6 +115,7 @@ void setup() {
 
 void loop() {
   const uint32_t now = millis();
+  loops++;
 
   net.loop();   // before web: this is what starts mDNS, which web then advertises on
   web.loop();
@@ -128,11 +136,13 @@ void loop() {
   if (elapsed(now, lastHealth, HEALTH_MS)) {
     lastHealth = now;
     logLine("health    : heap %lu low %lu rssi %d wifi %s mqtt %s radio %s queued %u "
-            "faults %u store %c/%u free%s",
+            "faults %u store %c/%u free%s loops %lu/s",
             (unsigned long)ESP.getFreeHeap(), (unsigned long)heapLowWater, net.rssi(),
             net.connected() ? "up" : "down", mqtt.connected() ? "up" : "down",
             radio.ready() ? "up" : "down", remotes.pending(), errorBuffer().count(),
-            store.activeName(), store.freeSlots(), store.degraded() ? " DEGRADED" : "");
+            store.activeName(), store.freeSlots(), store.degraded() ? " DEGRADED" : "",
+            (unsigned long)(loops / (HEALTH_MS / 1000)));
+    loops = 0;
     if (receiver.armed()) {
       const Receiver::Stats rx = receiver.stats();
       logLine("receiver  : %lus left, %lu edges/s, %lu frames, %lu presses, %u mutes%s",
