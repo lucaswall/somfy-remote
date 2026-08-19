@@ -221,7 +221,7 @@ raise one on a board that is behind; nothing may ever lower one.
 
 ## The two rings
 
-The console ring holds 80 lines, the fault ring 24, and faults are written to both. The
+The console ring holds 48 lines, the fault ring 16, and faults are written to both. The
 main log fills with routine traffic — a `health` line every five minutes and every command
 sent — so a fault from hours ago would be long evicted by the time anyone went looking.
 

@@ -62,6 +62,7 @@ static uint32_t lastHealth = 0;
 // The only way to price the receive interrupt: an ISR firing a few hundred times a second is
 // invisible in every other number here.
 static uint32_t loops = 0;
+static uint32_t lastReceiverActivity = 0;
 
 static void banner() {
   Serial.println();
@@ -140,10 +141,16 @@ void loop() {
             (unsigned long)(loops / (HEALTH_MS / 1000)),
             store.degraded() ? " DEGRADED" : "");
     loops = 0;
+    // Only when something moved. A line every five minutes saying nothing happened is what
+    // evicts the lines that did.
     const Receiver::Stats rx = receiver.stats();
-    logLine("receiver  : %lu edges/s, %lu frames, %lu presses, %u mutes%s",
-            (unsigned long)receiver.edgesPerSecond(), (unsigned long)rx.frames,
-            (unsigned long)rx.presses, rx.mutes, rx.muted ? " MUTED" : "");
+    const uint32_t activity = rx.frames + rx.presses + rx.mutes + rx.abandoned;
+    if (activity != lastReceiverActivity) {
+      lastReceiverActivity = activity;
+      logLine("receiver  : %lu edges/s, %lu frames, %lu presses, %u mutes%s",
+              (unsigned long)receiver.edgesPerSecond(), (unsigned long)rx.frames,
+              (unsigned long)rx.presses, rx.mutes, rx.muted ? " MUTED" : "");
+    }
   }
 
   const uint32_t heap = ESP.getFreeHeap();
