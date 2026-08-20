@@ -38,6 +38,8 @@ class SomfyRadio {
   // 0x0D is RX.
   uint8_t marcState() { return _cc1101.readStatus(CC1101_MARCSTATE); }
 
+  int16_t rssiDbm() { return _cc1101.rssiDbm(); }
+
   // Plays one press: the wake-up burst, a frame, and the repeats a receiver needs to hear
   // it. Blocks for about eight hundred milliseconds, which is why commands are queued
   // rather than sent from wherever they arrive.

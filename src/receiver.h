@@ -92,6 +92,8 @@ class Receiver {
     uint16_t peakRate;       // busiest 10 ms window ever seen, in edges
     uint32_t levelRepeats;   // how badly the front end is dropping edges
     uint8_t marcState;       // read live from the chip: 0x0D is RX
+    int16_t rssiNow;         // dBm, sampled: the noise floor when nothing is transmitting
+    int16_t rssiPeak;        // strongest dBm in the last few seconds — a press should spike it
     bool muted;
   };
   Stats stats();
@@ -103,6 +105,14 @@ class Receiver {
   void enforceRateLimit(uint32_t now);
   bool attach();
   void detach();
+
+  // Sampled on a timer rather than tied to a decode: the case worth measuring is the press
+  // that never becomes a frame, and there is nothing to hang a reading on then.
+  void sampleRssi(uint32_t now);
+  int16_t _rssiNow = -128;
+  int16_t _rssiPeak = -128;
+  uint32_t _rssiPeakAt = 0;
+  uint32_t _lastRssiAt = 0;
 
   SomfyRadio &_radio;
   Remotes &_remotes;

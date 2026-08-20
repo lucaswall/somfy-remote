@@ -181,9 +181,16 @@ void CC1101::configure() {
   writeRegister(REG_FOCCFG, 0x14);
   writeRegister(REG_BSCFG, 0x1C);
 
-  // MAX_DVGA_GAIN 3 caps the digital gain, each step ~6 dB (§17.4.1, Tables 32-33). The
-  // knob to move if a distant control cannot be heard; lowering it costs interrupt rate,
-  // steeply — 0 puts ~4700 edges/s into the handler and the limiter mutes the receiver.
+  // MAX_DVGA_GAIN caps the digital gain, each step ~6 dB (§17.4.1, Tables 32-33). The knob
+  // to move if a distant control cannot be heard; lowering it costs interrupt rate, steeply
+  // — 0 puts ~4700 edges/s into the handler and the limiter mutes the receiver.
+  //
+  // Stays at 3. Tried at 2 on 2026-08-20 to reach the far gallery wall controls and it was
+  // measurably worse, not better: 1367 edges/s against 4-7, 6556 ring overflows in the first
+  // half minute, the limiter muting four times, and still zero frames decoded. The extra
+  // ~6 dB lifts this site's noise floor over the threshold long before it lifts a distant
+  // control over it. Reverted the same hour. The far controls are a link-budget problem —
+  // antenna and siting — not one this register can solve.
   writeRegister(REG_AGCCTRL2, 0xC7);
   writeRegister(REG_AGCCTRL1, 0x00);
   // FILTER_LENGTH, which for OOK is the decision boundary rather than a length: 12 dB.
@@ -278,6 +285,12 @@ uint8_t CC1101::readStatus(uint8_t address) {
     value = again;
   }
   return value;
+}
+
+int16_t CC1101::rssiDbm() {
+  const uint8_t raw = readStatus(CC1101_RSSI);
+  const int16_t offset = (int16_t)(raw >= 128 ? (int16_t)raw - 256 : (int16_t)raw);
+  return (int16_t)(offset / 2 - 74);
 }
 
 uint8_t CC1101::readStatusOnce(uint8_t address) {

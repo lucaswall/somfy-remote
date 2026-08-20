@@ -13,6 +13,7 @@
 // Status registers, for the self-test.
 #define CC1101_PARTNUM 0x30
 #define CC1101_VERSION 0x31
+#define CC1101_RSSI 0x34
 #define CC1101_MARCSTATE 0x35
 
 // MARCSTATE values worth naming. Table for 0x35 in the datasheet.
@@ -57,6 +58,12 @@ class CC1101 {
   bool present();
 
   uint8_t readStatus(uint8_t address);
+
+  // Current RSSI in dBm — §17.3's conversion with this band's 74 dB offset. Only meaningful
+  // in receive; in IDLE the chip holds whatever it measured last. Worth having because a
+  // control that is never heard and a control that is not transmitting produce identical
+  // counters, and this separates them without a frame ever having to decode.
+  int16_t rssiDbm();
 
  private:
   uint8_t readStatusOnce(uint8_t address);

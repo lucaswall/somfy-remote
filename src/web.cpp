@@ -725,11 +725,12 @@ void WebUi::handleStatus() {
   // Always, not only when armed: a muted receiver and a quiet house look identical.
   const Receiver::Stats rx = _receiver.stats();
   snprintf(line, sizeof(line),
-           "receiver: %s  marcstate 0x%02X%s  %lu edges/s  %lu frames  %lu presses  "
-           "%u known\n",
+           "receiver: %s  marcstate 0x%02X%s  %lu edges/s  rssi %d/%d dBm  "
+           "%lu frames  %lu presses  %u known\n",
            _receiver.listening() ? "listening" : "MUTED", rx.marcState,
            rx.marcState == CC1101_STATE_RX ? "" : " NOT RX",
-           (unsigned long)_receiver.edgesPerSecond(), (unsigned long)rx.frames,
+           (unsigned long)_receiver.edgesPerSecond(), rx.rssiNow, rx.rssiPeak,
+           (unsigned long)rx.frames,
            (unsigned long)rx.presses, _mqtt.controls().count());
   out.add(line);
   snprintf(line, sizeof(line),

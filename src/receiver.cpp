@@ -191,6 +191,10 @@ void Receiver::loop() {
     applyEdges();
   }
 
+  if (_attached) {
+    sampleRssi(now);
+  }
+
   if (elapsed(now, _lastRateAt, 1000)) {
     const uint32_t total = isrInterrupts;
     _edgeRate = total - _lastRateCount;
@@ -201,6 +205,21 @@ void Receiver::loop() {
 
 // **The mute flag is consumed in the same step that acts on it.** Left set, this branch
 // re-fires every pass, pushing the retry further away each time until the receiver is dead.
+// A ten-millisecond cadence catches a Somfy burst — the frame alone runs tens of
+// milliseconds — while costing a twenty-microsecond SPI read a hundred times a second.
+// The peak decays over five seconds so it reads the same however often anyone polls it.
+void Receiver::sampleRssi(uint32_t now) {
+  if (!elapsed(now, _lastRssiAt, 10)) {
+    return;
+  }
+  _lastRssiAt = now;
+  _rssiNow = _radio.rssiDbm();
+  if (_rssiNow > _rssiPeak || (uint32_t)(now - _rssiPeakAt) > 5000) {
+    _rssiPeak = _rssiNow;
+    _rssiPeakAt = now;
+  }
+}
+
 void Receiver::enforceRateLimit(uint32_t now) {
   if (_attached && isrMuted) {
     detach();
@@ -407,6 +426,8 @@ Receiver::Stats Receiver::stats() {
   s.peakRate = isrPeakRate;
   s.levelRepeats = _decoder.levelRepeats();
   s.marcState = _radio.marcState();
+  s.rssiNow = _rssiNow;
+  s.rssiPeak = _rssiPeak;
   s.muted = _cooling;
   return s;
 }
