@@ -174,6 +174,43 @@ inline bool parseAddress(const char *s, uint32_t *out) {
   return true;
 }
 
+// Which indices lose their Home Assistant entities when `to` replaces `from` — one bit
+// each. An index that was enabled and is not any more, or that the new count no longer
+// reaches. A newly added index sets no bit, and neither does one that stays enabled.
+//
+// Deliberately not driven by `operational`: a remote flagged not-operational keeps its
+// entities on purpose, so the house can still see a shutter it has decided not to drive.
+inline uint32_t entitiesToRemove(const ConfigDoc &from, const ConfigDoc &to) {
+  uint32_t bits = 0;
+  const uint8_t wasCount = from.remoteCount();
+  const uint8_t nowCount = to.remoteCount();
+  for (uint8_t i = 0; i < wasCount && i < rs::MAX_REMOTES; i++) {
+    bool wasEnabled = false;
+    for (uint8_t e = 0; e < from.entries; e++) {
+      if (from.remotes[e].index == i) {
+        wasEnabled = from.remotes[e].enabled;
+        break;
+      }
+    }
+    if (!wasEnabled) {
+      continue;
+    }
+    bool isEnabled = false;
+    if (i < nowCount) {
+      for (uint8_t e = 0; e < to.entries; e++) {
+        if (to.remotes[e].index == i) {
+          isEnabled = to.remotes[e].enabled;
+          break;
+        }
+      }
+    }
+    if (!isEnabled) {
+      bits |= (uint32_t)1u << i;
+    }
+  }
+  return bits;
+}
+
 inline bool parse(const char *json, size_t len, ConfigDoc *out) {
   JsonDocument doc;
   if (deserializeJson(doc, json, len) != DeserializationError::Ok) {

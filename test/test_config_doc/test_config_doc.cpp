@@ -301,6 +301,51 @@ void a_document_carrying_an_oversized_address_is_refused() {
   TEST_ASSERT_FALSE(parse(json, strlen(json), &doc));
 }
 
+static ConfigDoc docOf(const char *json) {
+  ConfigDoc d;
+  TEST_ASSERT_TRUE(parse(json, strlen(json), &d));
+  return d;
+}
+
+void a_remote_that_loses_enabled_gives_up_its_entities() {
+  const ConfigDoc from = docOf(
+      "{\"v\":1,\"epoch\":1,\"base\":\"0x0\",\"remotes\":["
+      "{\"i\":0,\"enabled\":true},{\"i\":1,\"enabled\":true}]}");
+  const ConfigDoc to = docOf(
+      "{\"v\":1,\"epoch\":2,\"base\":\"0x0\",\"remotes\":["
+      "{\"i\":0,\"enabled\":true},{\"i\":1,\"enabled\":false}]}");
+  TEST_ASSERT_EQUAL_UINT32(1u << 1, entitiesToRemove(from, to));
+}
+
+void a_remote_that_falls_off_a_shrunken_count_gives_up_its_entities() {
+  const ConfigDoc from = docOf(
+      "{\"v\":1,\"epoch\":1,\"base\":\"0x0\",\"remotes\":["
+      "{\"i\":0,\"enabled\":true},{\"i\":2,\"enabled\":true}]}");
+  const ConfigDoc to = docOf(
+      "{\"v\":1,\"epoch\":2,\"base\":\"0x0\",\"remotes\":[{\"i\":0,\"enabled\":true}]}");
+  TEST_ASSERT_EQUAL_UINT32(1u << 2, entitiesToRemove(from, to));
+}
+
+void a_still_enabled_or_newly_added_remote_keeps_its_entities() {
+  const ConfigDoc from = docOf(
+      "{\"v\":1,\"epoch\":1,\"base\":\"0x0\",\"remotes\":[{\"i\":0,\"enabled\":true}]}");
+  const ConfigDoc to = docOf(
+      "{\"v\":1,\"epoch\":2,\"base\":\"0x0\",\"remotes\":["
+      "{\"i\":0,\"enabled\":true},{\"i\":1,\"enabled\":true}]}");
+  TEST_ASSERT_EQUAL_UINT32(0u, entitiesToRemove(from, to));
+}
+
+// The gallery roof is held off the air by operational, and keeps its cards on purpose.
+void a_remote_flagged_not_operational_keeps_its_entities() {
+  const ConfigDoc from = docOf(
+      "{\"v\":1,\"epoch\":1,\"base\":\"0x0\",\"remotes\":["
+      "{\"i\":0,\"enabled\":true,\"operational\":true}]}");
+  const ConfigDoc to = docOf(
+      "{\"v\":1,\"epoch\":2,\"base\":\"0x0\",\"remotes\":["
+      "{\"i\":0,\"enabled\":true,\"operational\":false}]}");
+  TEST_ASSERT_EQUAL_UINT32(0u, entitiesToRemove(from, to));
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(parses_a_document);
@@ -328,6 +373,10 @@ int main() {
   RUN_TEST(address_parsing_accepts_what_an_rts_address_looks_like);
   RUN_TEST(address_parsing_refuses_what_would_be_silently_truncated);
   RUN_TEST(a_document_carrying_an_oversized_address_is_refused);
+  RUN_TEST(a_remote_that_loses_enabled_gives_up_its_entities);
+  RUN_TEST(a_remote_that_falls_off_a_shrunken_count_gives_up_its_entities);
+  RUN_TEST(a_still_enabled_or_newly_added_remote_keeps_its_entities);
+  RUN_TEST(a_remote_flagged_not_operational_keeps_its_entities);
   RUN_TEST(travel_time_changes_the_content_hash);
   return UNITY_END();
 }

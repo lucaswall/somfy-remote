@@ -315,10 +315,21 @@ void WebUi::handleControlSave() {
     at = end + 1;
   }
 
-  if (!_mqtt.saveControl(control)) {
-    // The retained topic is the only durable copy: reporting success for a save the broker
-    // never took would lose an hour of walking at the next restart.
-    _server.send(503, "text/plain", "the broker did not accept it — nothing was saved\n");
+  const HaMqtt::SaveResult saved = _mqtt.saveControl(control);
+  if (saved == HaMqtt::SaveResult::NoRoom) {
+    char message[80];
+    snprintf(message, sizeof(message), "no room for another control — %u is the limit\n",
+             (unsigned)ctl::MAX_CONTROLS);
+    _server.send(409, "text/plain", message);
+    return;
+  }
+  if (saved == HaMqtt::SaveResult::NotPublished) {
+    // In effect now, not durable yet. The retained topic is the only copy that survives a
+    // restart, so say which half worked rather than sending somebody back to re-walk it.
+    _receiver.forgetSighting(control.address);
+    _server.send(503, "text/plain",
+                 "saved and working now, but the broker did not take it — it will not "
+                 "survive a restart until it does\n");
     return;
   }
   _receiver.forgetSighting(control.address);

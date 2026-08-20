@@ -426,7 +426,7 @@ const $ = id => document.getElementById(id);
 const CMD = {1:'My',2:'Up',3:'My+Up',4:'Down',5:'My+Down',6:'Up+Down',8:'Prog',9:'Sun',10:'Flag'};
 const NAME_MAX = 39;
 
-let names = [], newest = true, open = null, last = null, sig = '';
+let names = [], newest = true, open = null, last = null, sig = '', lastU = null, lastK = null;
 
 const esc = t => String(t).replace(/[&<>"']/g, c =>
   ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -446,7 +446,7 @@ function editor(a, name, d, unknown){
     <div class="count" id="cc${a}"></div>
     <label class="f" style="margin-top:12px">Shutters it drives</label>
     <div class="ticks">${names.map((n,i)=>`<label class="tick"><input type="checkbox"
-      data-a="${a}" value="${i}" ${d>>i & 1 ? 'checked' : ''}>${esc(n||('Remote '+i))}</label>`).join('')}</div>
+      data-a="${a}" value="${i}" ${d>>i & 1 ? 'checked' : ''}>${n ? esc(n)+' ('+i+')' : 'Remote '+i}</label>`).join('')}</div>
     <div class="row" style="margin-top:14px">
       <button onclick="save(${a})">Save</button>
       <button class="danger" onclick="${unknown?'drop':'forget'}(${a})">${unknown?'Ignore':'Forget'}</button>
@@ -480,19 +480,31 @@ function draw(s){
     + (s.ignored ? ` · ${s.ignored} from controls not on the list` : '')
     + (s.muted ? ' · MUTED' : '');
 
-  const u = s.heard.slice().sort((x,y)=> newest ? x.last - y.last : y.first - x.first);
-  const k = s.known.slice().sort((x,y)=> (x.last < 0 ? 1e12 : x.last) - (y.last < 0 ? 1e12 : y.last));
+  // Both lists sort by last-heard, so any press anywhere reorders them. While an editor is
+  // open the previous order is kept: a reorder rebuilds the list, and rebuilding it throws
+  // away the text being typed into it.
+  const u = open !== null && lastU ? keepOrder(s.heard, lastU)
+      : s.heard.slice().sort((x,y)=> newest ? x.last - y.last : y.first - x.first);
+  const k = open !== null && lastK ? keepOrder(s.known, lastK)
+      : s.known.slice().sort((x,y)=> (x.last < 0 ? 1e12 : x.last) - (y.last < 0 ? 1e12 : y.last));
+  lastU = u.map(c=>c.a); lastK = k.map(c=>c.a);
   $('n').textContent = u.length;
   $('kn').textContent = k.length;
   $('empty').style.display = u.length ? 'none' : '';
   $('emptyKnown').style.display = k.length ? 'none' : '';
 
-  const next = JSON.stringify([u.map(c=>[c.a,c.n]), k.map(c=>[c.a,c.name,c.d]), open, s.learning]);
+  // Keyed on the row *set* in a fixed order, never on display order or on anything that
+  // changes when a control is heard — the press count and the age are patched in place by
+  // refreshAges() instead. Sorting by address here is what stops a press from rebuilding
+  // the DOM under an open editor.
+  const byAddr = (x,y)=> x[0] - y[0];
+  const next = JSON.stringify([u.map(c=>[c.a]).sort(byAddr),
+                               k.map(c=>[c.a,c.name,c.d]).sort(byAddr), open, s.learning]);
   if (next === sig) { refreshAges(u, k); return; }
   sig = next;
 
   $('unknown').innerHTML = u.map(c => row(c.a,
-      `${CMD[c.cmd] || ('0x'+c.cmd.toString(16))} <span style="color:var(--dim)">&middot; ${c.n}&times;</span>`,
+      `${CMD[c.cmd] || ('0x'+c.cmd.toString(16))} <span style="color:var(--dim)">&middot; <span id="ct${c.a}">${c.n}</span>&times;</span>`,
       `<span id="ag${c.a}">${ago(c.last)}</span>`,
       editor(c.a, '', 0, true))).join('');
 
@@ -503,14 +515,26 @@ function draw(s){
   if (open !== null) counter(open);
 }
 
+// Keeps the rows a previous draw put on the page in the order it put them, appending
+// anything new at the end. Used only while an editor is open.
+function keepOrder(list, order){
+  const byA = new Map(list.map(c=>[c.a,c]));
+  const kept = order.map(a=>byA.get(a)).filter(Boolean);
+  for (const c of list) if (!order.includes(c.a)) kept.push(c);
+  return kept;
+}
+
 function refreshAges(u, k){
-  for (const c of u.concat(k)) { const e = $('ag'+c.a); if (e) e.textContent = ago(c.last); }
+  for (const c of u.concat(k)) {
+    const e = $('ag'+c.a); if (e) e.textContent = ago(c.last);
+    const n = $('ct'+c.a); if (n && c.n !== undefined) n.textContent = c.n;
+  }
   $('state').textContent = last.learning ? last.learnLeft + 's'
     : (last.listening ? 'listening' : 'backing off');
 }
 
-function pick(a){ open = (open === a) ? null : a; sig = ''; draw(last); }
-function shut(){ open = null; sig = ''; draw(last); }
+function pick(a){ open = (open === a) ? null : a; if (open === null) lastU = lastK = null; sig = ''; draw(last); }
+function shut(){ open = null; sig = ''; lastU = lastK = null; draw(last); }
 function flip(){ newest = !newest; $('sortbtn').textContent = newest ? 'newest first' : 'walk order'; sig=''; draw(last); }
 
 async function learn(){ await fetch('/api/control/learn',{method:'POST'}); poll(); }

@@ -99,6 +99,15 @@ class Remotes {
     return remote < rs::MAX_REMOTES && _adoptFailed[remote];
   }
 
+  // Remotes whose queued command was dropped since the last call, one bit each; reading
+  // clears them. Home Assistant's covers are optimistic, so it has already drawn the
+  // movement — without this it keeps showing a shutter that never moved.
+  uint32_t takeRejected() {
+    const uint32_t bits = _rejected;
+    _rejected = 0;
+    return bits;
+  }
+
  private:
   SomfyRadio &_radio;
   Store &_store;
@@ -109,4 +118,14 @@ class Remotes {
   // Cleared only by a later adoption that does persist. The send path's own put() must not
   // clear it: transmittable() blocks that path, so it never runs while this is set.
   bool _adoptFailed[rs::MAX_REMOTES] = {false};
+
+  // Deliberately not a RemoteState version bump: nothing moved, and every other consumer
+  // of that version reads it as "a press happened".
+  uint32_t _rejected = 0;
+
+  void markRejected(uint8_t remote) {
+    if (remote < rs::MAX_REMOTES) {
+      _rejected |= (uint32_t)1u << remote;
+    }
+  }
 };

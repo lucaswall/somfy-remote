@@ -93,6 +93,7 @@ void Remotes::loop() {
              : !operational(next.remote) ? "not operational"
                                          : "adopted rolling code is not durable",
              somfyCommandName(next.command));
+    markRejected(next.remote);
     return;
   }
 
@@ -104,6 +105,7 @@ void Remotes::loop() {
   if (!_store.put(rs::NS_CODE, next.remote, code + 1)) {
     logError("remotes   : remote %u %s not sent — rolling code is not durable",
              next.remote, somfyCommandName(next.command));
+    markRejected(next.remote);
     return;
   }
 

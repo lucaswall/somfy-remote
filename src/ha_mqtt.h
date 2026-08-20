@@ -47,7 +47,12 @@ class HaMqtt {
 
   // False means the broker did not take it — worth surfacing, since the retained topic is
   // the only durable copy and somebody walked a house to produce it.
-  bool saveControl(const ctl::Control &control);
+  // Three outcomes, because two of them are not the same failure. NoRoom means nothing
+  // changed; NotPublished means the control IS in effect now and will be rewritten on the
+  // next reconnect, but is not durable yet. Reporting either as "nothing was saved" sent
+  // somebody back to re-walk a house for a control that was already working.
+  enum class SaveResult { Saved, NoRoom, NotPublished };
+  SaveResult saveControl(const ctl::Control &control);
   bool forgetControl(uint32_t address);
 
  private:
@@ -97,7 +102,12 @@ class HaMqtt {
   // subscribe callback — adopting there would publish from inside PubSubClient's own read.
   uint32_t _recheckMirror = 0;
 
-  char _names[rs::MAX_REMOTES][24] = {};
+  // ctl::NAME_LEN, so there is one definition of "as long as a name gets" rather than a
+  // second, shorter one here. At 24 these were cut to 23 characters and "Gallery Shutters
+  // Left" and "…Right" arrived identical, which is unusable in a checkbox list. Costs
+  // 30x40 = 1200 B static; the incoming names document at full width is about 1.4 KB
+  // against MQTT_BUFFER's 2048, so it still fits in one packet.
+  char _names[rs::MAX_REMOTES][ctl::NAME_LEN] = {};
 
   uint32_t _publishedVersion[rs::MAX_REMOTES] = {0};
   uint32_t _lastAttempt = 0;

@@ -163,6 +163,20 @@ void HaMqtt::loop() {
 
   recheckMirrors();
 
+  // A command that was dropped never moved anything, but Home Assistant's covers are
+  // optimistic and have already drawn the movement. Re-publishing what we actually believe
+  // pulls the entity back within the second. A remote whose position was never known has
+  // nothing truthful to publish, and stays optimistic until its first real press.
+  const uint32_t rejected = _remotes.takeRejected();
+  if (rejected != 0) {
+    for (uint8_t i = 0; i < _remotes.count() && i < rs::MAX_REMOTES; i++) {
+      if ((rejected & ((uint32_t)1u << i)) != 0) {
+        publishState(i);
+        publishPosition(i);
+      }
+    }
+  }
+
   // Publish on any change, whoever caused it — a command from Home Assistant or a press
   // on the web page.
   // A shutter in motion is worth a percentage a second: fewer and Home Assistant's slider
@@ -233,20 +247,20 @@ bool HaMqtt::republishControl(const ctl::Control &control) {
   return publishControlDiscovery(control);
 }
 
-bool HaMqtt::saveControl(const ctl::Control &control) {
+HaMqtt::SaveResult HaMqtt::saveControl(const ctl::Control &control) {
   if (!_controls.set(control)) {
     logError("mqtt      : no room for another control, %u already", _controls.count());
-    return false;
+    return SaveResult::NoRoom;
   }
 
   if (!republishControl(control)) {
-    // Left in the RAM map: the reconnect path rewrites every control, so this repairs
-    // itself. What must not happen is reporting success.
+    // Left in the RAM map on purpose: the reconnect path rewrites every control, so this
+    // repairs itself. What must not happen is reporting plain success.
     logError("mqtt      : control \"%s\" was not saved to the broker", control.name);
-    return false;
+    return SaveResult::NotPublished;
   }
   logLine("control   : \"%s\" saved", control.name);
-  return true;
+  return SaveResult::Saved;
 }
 
 bool HaMqtt::forgetControl(uint32_t address) {
@@ -503,6 +517,12 @@ void HaMqtt::reconcileConfig() {
       rs::LiveMap projected;
       cfg::project(_staged, &projected);
 
+      // Computed before the store is rewritten: afterwards every read reflects the new
+      // configuration and the difference is gone. Acted on only if the commit succeeds — a
+      // config that was never adopted must not take entities down with it.
+      const uint32_t removals =
+          _haveConfig ? cfg::entitiesToRemove(_config, _staged) : 0;
+
       // **The epoch is zeroed first, skipped by the loop, and written last.** A power loss
       // part-way otherwise leaves a half-new configuration wearing the new epoch, and equal
       // epochs are not adopted, so nothing would ever repair it. Zero is younger than
@@ -529,6 +549,14 @@ void HaMqtt::reconcileConfig() {
         applyTravelTimes();
         logLine("mqtt      : config epoch %lu adopted from %s, %u remotes",
                 (unsigned long)_config.epoch, _config.writer, _config.remoteCount());
+        // A config that arrives from the broker used to disable or drop remotes without
+        // ever retracting their entities, leaving covers in Home Assistant that look live
+        // and answer nothing. Both adoption paths reach here.
+        for (uint8_t i = 0; i < rs::MAX_REMOTES; i++) {
+          if ((removals & ((uint32_t)1u << i)) != 0) {
+            publishDiscoveryRemoval(i);
+          }
+        }
       } else {
         logError("mqtt      : config epoch %lu could not be persisted",
                  (unsigned long)_staged.epoch);
@@ -613,11 +641,16 @@ const char *HaMqtt::nameOf(uint8_t remote) const {
 }
 
 // An empty retained payload on a discovery topic is how MQTT discovery says "forget this".
-// The two retained state topics go with it, or they persist into every nightly backup for
-// an entity nothing will ever republish.
+// The three retained state topics go with it, or they persist into every nightly backup
+// for an entity nothing will ever republish.
+//
+// **These tables must match publishDiscovery() exactly.** They did not: "prog"/"button" is
+// a leftover from a firmware that published a Prog button, so this cleared a topic nothing
+// writes, while the rolling-code sensor it does publish was never cleared and survived as
+// a live-looking orphan.
 void HaMqtt::publishDiscoveryRemoval(uint8_t remote) {
-  static const char *const SUFFIX[3] = {"prog", "my", "cover"};
-  static const char *const COMPONENT[3] = {"button", "switch", "cover"};
+  static const char *const SUFFIX[3] = {"code", "my", "cover"};
+  static const char *const COMPONENT[3] = {"sensor", "switch", "cover"};
   char object[OBJECT_ID_LEN], topic[DISCOVERY_TOPIC_LEN];
   for (uint8_t i = 0; i < 3; i++) {
     uniqueId(object, sizeof(object), MQTT_DEVICE_ID, remote, SUFFIX[i]);
@@ -629,6 +662,11 @@ void HaMqtt::publishDiscoveryRemoval(uint8_t remote) {
   _mqtt.publish(state, "", true);
   topicMyState(state, sizeof(state), MQTT_DEVICE_ID, remote);
   _mqtt.publish(state, "", true);
+  topicCoverPosition(state, sizeof(state), MQTT_DEVICE_ID, remote);
+  _mqtt.publish(state, "", true);
+  // **Not the code state topic.** That retained payload is the mirror reconcileCounters()
+  // reads back, and removal deliberately keeps it — only the sensor's discovery config is
+  // cleared above.
   logLine("mqtt      : remote %u entities removed from Home Assistant", remote);
 }
 

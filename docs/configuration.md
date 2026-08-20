@@ -53,6 +53,14 @@ Until the topic exists the device is **unconfigured**: no entities, every comman
 and it says so on its own page. That is correct for a board that does not know what it
 controls, not a fault to work around.
 
+Re-running is safe. The tool reads the retained document first, takes `epoch + 1`, and
+carries every existing entry forward whole — it overwrites only `enabled` and
+`operational`, so a per-remote `addr` override or `travel` time set from the web UI
+survives. A `--count` lower than the highest index already in the document is refused,
+because an index that falls out of the array has its address and flags cleared rather than
+left alone; pass `--allow-shrink` when that is what you mean. `--dry-run` prints the
+per-remote diff and the payload without publishing.
+
 ## Replacing a board
 
 1. Flash over USB. `include/secrets.h` still has to be right — WiFi and MQTT credentials

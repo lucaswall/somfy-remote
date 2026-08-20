@@ -13,6 +13,11 @@ line or via SOMFY_ADDRESS_BASE in the environment — never commit it.
 
 Reads the current document first and takes epoch + 1, so seeding twice does not go
 backwards and a device that already has a newer one is not overwritten.
+
+Re-running preserves every field of an existing entry and overwrites only `enabled` and
+`operational` — per-remote `addr` overrides and `travel` times set from the web UI survive.
+A `--count` lower than the highest existing index is refused, because an index that falls
+out of the array is cleared rather than left alone; pass --allow-shrink to mean it.
 """
 
 import argparse
@@ -49,6 +54,8 @@ def main():
     ap.add_argument("--disabled", default="",
                     help="comma-separated indices with no Home Assistant entities")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--allow-shrink", action="store_true",
+                    help="permit a --count that drops existing indices and their overrides")
     args = ap.parse_args()
 
     if not args.base:
@@ -84,23 +91,55 @@ def main():
         print(f"existing document: epoch {existing.get('epoch')} "
               f"by {existing.get('writer')}", file=sys.stderr)
 
+    # Carry the existing entries forward whole. Copying the entire dict rather than named
+    # fields is deliberate: a field a future firmware adds must not be destroyed by an older
+    # copy of this tool.
+    by_index = {
+        int(e["i"]): dict(e)
+        for e in existing.get("remotes", [])
+        if isinstance(e, dict) and "i" in e
+    }
+
+    # An index that falls out of the array is not left alone — cfg::project() clears its
+    # address and flags — so a shrink silently destroys that index's override.
+    dropped = sorted(i for i in by_index if i >= args.count)
+    if dropped and not args.allow_shrink:
+        sys.exit(
+            f"error: --count {args.count} would drop remote(s) {dropped} and any address "
+            f"override or travel time they carry. Re-run with --allow-shrink to mean it."
+        )
+
+    remotes = []
+    for i in range(args.count):
+        entry = dict(by_index.get(i, {"i": i}))
+        entry["i"] = i
+        entry["enabled"] = i not in disabled
+        # A shutter known not to work is refused in the send path, not merely left out of
+        # automations.
+        entry["operational"] = i not in blocked
+        remotes.append(entry)
+
     doc = {
         "v": 1,
         "epoch": int(existing.get("epoch", 0)) + 1,
         "writer": "seed",
         "hash": 0,
         "base": f"0x{base:06X}",
-        "remotes": [
-            {
-                "i": i,
-                "enabled": i not in disabled,
-                # A shutter known not to work is refused in the send path, not merely
-                # left out of automations.
-                "operational": i not in blocked,
-            }
-            for i in range(args.count)
-        ],
+        "remotes": remotes,
     }
+
+    if args.dry_run:
+        for i in range(args.count):
+            before, after = by_index.get(i), remotes[i]
+            if before is None:
+                print(f"  remote {i}: new", file=sys.stderr)
+            elif before != after:
+                changed = {k: (before.get(k), after.get(k))
+                           for k in set(before) | set(after)
+                           if before.get(k) != after.get(k)}
+                print(f"  remote {i}: {changed}", file=sys.stderr)
+        for i in dropped:
+            print(f"  remote {i}: DROPPED (was {by_index[i]})", file=sys.stderr)
 
     payload = json.dumps(doc, separators=(",", ":"))
     print(f"{topic} ({len(payload)} bytes, epoch {doc['epoch']})", file=sys.stderr)

@@ -18,6 +18,9 @@ include/secrets.h
 # Serial capture
 logs/
 
+# Byte-compiled tools/. `python3 -m py_compile` leaves these beside the script.
+__pycache__/
+
 # Claude Code — machine-local overrides
 .claude/settings.local.json
 
