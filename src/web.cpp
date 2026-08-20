@@ -10,6 +10,7 @@
 #include "page.h"
 #include "secrets.h"
 #include "control_map.h"
+#include "http_origin.h"
 #include "somfy_frame.h"
 
 // Names reach three hand-built JSON documents, and one of the three doors is the MQTT names
@@ -128,17 +129,26 @@ void WebUi::start() {
           WiFi.localIP().toString().c_str());
 }
 
-// An absent Origin is allowed — curl and anything scripted have no reason to send one. A
-// present one is matched against the Host header rather than a fixed name, because the UI is
-// reached both by IP and as <hostname>.local.
+// **The target is checked before the Origin.** Both headers come from the browser, so
+// matching one against the other compares two attacker-supplied values: a page anywhere on
+// the internet whose DNS answer is re-pointed at this device sends a consistent pair for
+// its own name, and /api/send needs no password. Only a Host this device actually answers
+// to gets past the first gate.
+//
+// An absent Origin is still allowed — curl and anything scripted have no reason to send
+// one — but it no longer means an unchecked Host.
 bool WebUi::sameOrigin() {
+  const String host = _server.hostHeader();
+  if (!http::hostIsOurs(host.c_str(), _hostname, WiFi.localIP().toString().c_str())) {
+    _server.send(403, "text/plain", "request refused: unrecognised Host\n");
+    logError("web       : refused Host '%s'", host.c_str());
+    return false;
+  }
+
   if (!_server.hasHeader("Origin")) {
     return true;
   }
-  const String origin = _server.header("Origin");
-  const int slashes = origin.indexOf("//");
-  const String authority = slashes < 0 ? origin : origin.substring(slashes + 2);
-  if (authority == _server.hostHeader()) {
+  if (http::originMatchesHost(_server.header("Origin").c_str(), host.c_str())) {
     return true;
   }
   _server.send(403, "text/plain", "cross-origin request refused\n");
