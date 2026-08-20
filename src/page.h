@@ -101,7 +101,10 @@ font-variant-numeric:tabular-nums}
 border-radius:12px;text-align:center}
 button.link{background:none;border:none;color:var(--accent);font-size:12px;padding:0;
 cursor:pointer;flex:0 0 auto;width:auto}
-.ticks{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.ticks{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));
+gap:2px 10px;margin-top:8px}
+.tick{display:flex;align-items:center;gap:.5em;min-height:34px;line-height:1.25}
+.tick input{flex:none;width:17px;height:17px;margin:0}
 )CSS";
 
 // --- operation ---------------------------------------------------------------------------
