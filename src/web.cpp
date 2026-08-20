@@ -270,33 +270,31 @@ void WebUi::handleControlSave() {
   ctl::Control control = {};
   control.address = (uint32_t)strtoul(_server.arg("address").c_str(), nullptr, 10) & 0xFFFFFFu;
 
+  // Scanned and refused, never filtered. Silently deleting characters out of a typed name
+  // is the same class of surprise as silently altering a typed address, and the length was
+  // being measured after the strip — so a 41-character name with two quotes used to pass.
   const String requested = _server.arg("name");
-  uint8_t kept = 0;
-  bool overflowed = false;
-  for (uint16_t i = 0; i < requested.length(); i++) {
-    const char c = requested[i];
-    if (c == '"' || c == '\\' || (uint8_t)c < 0x20) {
-      continue;
-    }
-    if (kept >= ctl::NAME_LEN - 1) {
-      overflowed = true;
-      break;
-    }
-    control.name[kept++] = c;
-  }
-  control.name[kept] = '\0';
-  if (kept == 0) {
+  if (requested.length() == 0) {
     _server.send(400, "text/plain", "a name is required\n");
     return;
   }
-  // Refused rather than cut: a truncated name still looks like a name.
-  if (overflowed) {
+  if (!ctl::nameIsAcceptable(requested.c_str())) {
+    _server.send(400, "text/plain",
+                 "a name cannot contain a quote, a backslash or a control character\n");
+    return;
+  }
+  // Refused rather than cut: a truncated name still looks like a name. Measured on the raw
+  // bytes, which is what the device stores — the page's maxlength counts UTF-16 code units,
+  // so for accented names the two limits disagree by design.
+  if (requested.length() >= ctl::NAME_LEN) {
     char message[64];
     snprintf(message, sizeof(message), "name is longer than %u characters\n",
              (unsigned)(ctl::NAME_LEN - 1));
     _server.send(400, "text/plain", message);
     return;
   }
+  strncpy(control.name, requested.c_str(), ctl::NAME_LEN - 1);
+  control.name[ctl::NAME_LEN - 1] = '\0';
 
   // "0,2,3" — the indices this control drives. Only the static bound is applied here;
   // whether an index currently exists is decided when a press arrives, because the
@@ -466,6 +464,8 @@ void WebUi::handleSend() {
     _server.send(409, "text/plain",
                  !_remotes.hasCounter((uint8_t)remote)
                      ? "remote has no rolling code yet\n"
+                 : _remotes.adoptFailed((uint8_t)remote)
+                     ? "remote's adopted rolling code could not be stored\n"
                      : "remote is disabled or not operational\n");
     return;
   }
@@ -567,6 +567,8 @@ void WebUi::handleProg() {
     _server.send(409, "text/plain",
                  !_remotes.hasCounter((uint8_t)remote)
                      ? "remote has no rolling code yet\n"
+                 : _remotes.adoptFailed((uint8_t)remote)
+                     ? "remote's adopted rolling code could not be stored\n"
                      : "remote is disabled or not operational\n");
     return;
   }
@@ -593,10 +595,18 @@ void WebUi::handleRemoteAdd() {
     return;
   }
 
+  // Absent means "derive it from the base". Present and unparseable is refused rather than
+  // collapsed into the derived address — a typed address that quietly becomes a different
+  // one is how a remote ends up driving somebody else's motor.
   const String addr = _server.arg("address");
+  uint32_t address = rs::ADDR_NONE;
+  if (addr.length() > 0 && !cfg::parseAddress(addr.c_str(), &address)) {
+    _server.send(400, "text/plain",
+                 "address must be 1-6 hex digits, optionally 0x-prefixed (24 bits)\n");
+    return;
+  }
   next.remotes[next.entries].index = index;
-  next.remotes[next.entries].address =
-      addr.length() > 0 ? cfg::parseHex(addr.c_str(), rs::ADDR_NONE) : rs::ADDR_NONE;
+  next.remotes[next.entries].address = address;
   next.remotes[next.entries].enabled = true;
   // A new remote is not operational until somebody has paired it and seen it move. The
   // safe default is the one that cannot fire a motor by accident.
@@ -709,7 +719,10 @@ void WebUi::handleStatus() {
   // here because a counter that has stopped moving while presses are logged is the
   // signature of a flash that has stopped accepting writes — and of shutters that will
   // ignore the next boot's commands.
-  char line[128];
+  // 192, not 128: the counters line is nine numbers and a suffix, which at full width is
+  // about 185 characters — gcc's -Wformat-truncation was right, and a truncated diagnostic
+  // is worst exactly when the numbers are large enough to matter.
+  char line[192];
   for (uint8_t i = 0; i < _remotes.count(); i++) {
     const RemoteState &state = _remotes.state(i);
     const char *name = _mqtt.nameOf(i);

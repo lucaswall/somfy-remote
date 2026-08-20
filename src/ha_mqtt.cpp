@@ -161,6 +161,8 @@ void HaMqtt::loop() {
     }
   }
 
+  recheckMirrors();
+
   // Publish on any change, whoever caused it — a command from Home Assistant or a press
   // on the web page.
   // A shutter in motion is worth a percentage a second: fewer and Home Assistant's slider
@@ -415,6 +417,10 @@ void HaMqtt::reconcileCounters() {
       case rs::REC_ADOPT:
         if (_remotes.adoptCounter(i, effective)) {
           adopted++;
+        } else {
+          // Not silence: the store refused the write, so this remote's counter is behind
+          // the mirror and it cannot transmit. Counted with the others that cannot.
+          missing++;
         }
         break;
       case rs::REC_KEEP_PUBLISH:
@@ -442,6 +448,49 @@ void HaMqtt::reconcileCounters() {
   }
   if (missing > 0) {
     logError("mqtt      : %u remote(s) have no rolling code and cannot transmit", missing);
+  }
+}
+
+// A retained code that arrives after the reconcile window shut was recorded and then
+// ignored: the mirror was never adopted and the floor never rose, so the next press
+// published a *lower* counter straight over it. One remote per pass, from the main loop.
+void HaMqtt::recheckMirrors() {
+  if (_recheckMirror == 0) {
+    return;
+  }
+
+  for (uint8_t i = 0; i < rs::MAX_REMOTES; i++) {
+    const uint32_t bit = (uint32_t)1u << i;
+    if ((_recheckMirror & bit) == 0) {
+      continue;
+    }
+    _recheckMirror &= ~bit;
+    if (i >= _remotes.count()) {
+      continue;   // an index the current config does not reach
+    }
+
+    uint32_t effective = 0;
+    const rs::Reconcile action =
+        rs::reconcile(_remotes.hasCounter(i), _remotes.counter(i), _haveMirror[i],
+                      _mirror[i], MAX_ADOPT_JUMP, &effective);
+
+    // Same rule as reconcileCounters(): a refused mirror must never become the floor.
+    if (action != rs::REC_REFUSE_JUMP && _haveMirror[i] && _mirror[i] > _mirrorSeen[i]) {
+      _mirrorSeen[i] = _mirror[i];
+    }
+
+    if (action == rs::REC_ADOPT) {
+      if (_remotes.adoptCounter(i, effective)) {
+        logLine("mqtt      : remote %u adopted late mirror %lu", i,
+                (unsigned long)effective);
+      }
+    } else if (action == rs::REC_REFUSE_JUMP) {
+      logError("mqtt      : remote %u mirror %lu is %lu ahead of %lu — refused", i,
+               (unsigned long)_mirror[i],
+               (unsigned long)(_mirror[i] - _remotes.counter(i)),
+               (unsigned long)_remotes.counter(i));
+    }
+    return;   // one per pass: adoptCounter() writes flash
   }
 }
 
@@ -943,6 +992,12 @@ void HaMqtt::onMessage(const char *topic, const uint8_t *payload, unsigned int l
     }
     _mirror[remote] = value;
     _haveMirror[remote] = true;
+    // Only when it is ahead of the floor. This device subscribes to its own code topic, so
+    // the broker echoes every publishCounter() back through here; an unconditional flag
+    // would re-reconcile on every press forever.
+    if (value > _mirrorSeen[remote] && remote < rs::MAX_REMOTES) {
+      _recheckMirror |= (uint32_t)1u << remote;
+    }
     return;
   }
 

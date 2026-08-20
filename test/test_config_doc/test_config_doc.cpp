@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include <string.h>
 #include <unity.h>
 
@@ -236,6 +237,70 @@ static void travel_time_changes_the_content_hash(void) {
   TEST_ASSERT_NOT_EQUAL(cfg::contentHash(a), cfg::contentHash(b));
 }
 
+// A flag that exists to stop a motor must never be granted by a type mismatch. These are
+// the shapes a template renderer produces when a JSON serialiser would have produced a
+// boolean.
+static bool parsesFlagDoc(const char *flagJson) {
+  char json[192];
+  snprintf(json, sizeof(json),
+           "{\"v\":1,\"epoch\":7,\"base\":\"0x000000\",\"remotes\":[{\"i\":9,%s}]}",
+           flagJson);
+  ConfigDoc doc;
+  return parse(json, strlen(json), &doc);
+}
+
+void a_quoted_boolean_flag_refuses_the_document() {
+  TEST_ASSERT_FALSE(parsesFlagDoc("\"operational\":\"false\""));
+  TEST_ASSERT_FALSE(parsesFlagDoc("\"enabled\":\"true\""));
+}
+
+void a_numeric_flag_refuses_the_document() {
+  TEST_ASSERT_FALSE(parsesFlagDoc("\"operational\":0"));
+  TEST_ASSERT_FALSE(parsesFlagDoc("\"enabled\":1"));
+}
+
+void a_null_flag_takes_the_default_rather_than_refusing() {
+  TEST_ASSERT_TRUE(parsesFlagDoc("\"operational\":null"));
+}
+
+void an_absent_flag_still_defaults_to_true() {
+  char json[128];
+  snprintf(json, sizeof(json),
+           "{\"v\":1,\"epoch\":7,\"base\":\"0x000000\",\"remotes\":[{\"i\":9}]}");
+  ConfigDoc doc;
+  TEST_ASSERT_TRUE(parse(json, strlen(json), &doc));
+  TEST_ASSERT_TRUE(doc.remotes[0].operational);
+  TEST_ASSERT_TRUE(doc.remotes[0].enabled);
+}
+
+void address_parsing_accepts_what_an_rts_address_looks_like() {
+  uint32_t v = 0;
+  TEST_ASSERT_TRUE(parseAddress("0x0A1B2C", &v));
+  TEST_ASSERT_EQUAL_UINT32(0x0A1B2Cu, v);
+  TEST_ASSERT_TRUE(parseAddress("0a1b2c", &v));
+  TEST_ASSERT_EQUAL_UINT32(0x0A1B2Cu, v);
+  TEST_ASSERT_TRUE(parseAddress("1", &v));
+  TEST_ASSERT_EQUAL_UINT32(1u, v);
+}
+
+void address_parsing_refuses_what_would_be_silently_truncated() {
+  uint32_t v = 0;
+  TEST_ASSERT_FALSE(parseAddress("1a2b3g", &v));    // not hex
+  TEST_ASSERT_FALSE(parseAddress("1a2b3c4d", &v));  // wider than 24 bits
+  TEST_ASSERT_FALSE(parseAddress("ffffffff", &v));  // would land on ADDR_NONE
+  TEST_ASSERT_FALSE(parseAddress("0x", &v));
+  TEST_ASSERT_FALSE(parseAddress("", &v));
+  TEST_ASSERT_FALSE(parseAddress(nullptr, &v));
+}
+
+void a_document_carrying_an_oversized_address_is_refused() {
+  static const char json[] =
+      "{\"v\":1,\"epoch\":7,\"base\":\"0x000000\",\"remotes\":["
+      "{\"i\":0,\"addr\":\"0x1a2b3c4d\"}]}";
+  ConfigDoc doc;
+  TEST_ASSERT_FALSE(parse(json, strlen(json), &doc));
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(parses_a_document);
@@ -256,6 +321,13 @@ int main() {
   RUN_TEST(travel_time_survives_the_store);
   RUN_TEST(travel_time_round_trips_through_json);
   RUN_TEST(a_document_without_a_travel_time_uses_the_default);
+  RUN_TEST(a_quoted_boolean_flag_refuses_the_document);
+  RUN_TEST(a_numeric_flag_refuses_the_document);
+  RUN_TEST(a_null_flag_takes_the_default_rather_than_refusing);
+  RUN_TEST(an_absent_flag_still_defaults_to_true);
+  RUN_TEST(address_parsing_accepts_what_an_rts_address_looks_like);
+  RUN_TEST(address_parsing_refuses_what_would_be_silently_truncated);
+  RUN_TEST(a_document_carrying_an_oversized_address_is_refused);
   RUN_TEST(travel_time_changes_the_content_hash);
   return UNITY_END();
 }

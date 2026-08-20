@@ -138,6 +138,42 @@ inline uint32_t parseHex(const char *s, uint32_t fallback) {
   return digits == 0 ? fallback : v;
 }
 
+// parseHex cannot validate, only fall back: it cannot tell an absent value from an
+// unparseable one, and "ffffffff" parses to exactly rs::ADDR_NONE — the sentinel meaning
+// "derive this from the base". This one refuses rather than guessing, and caps at the six
+// hex digits an RTS address actually has.
+inline bool parseAddress(const char *s, uint32_t *out) {
+  if (s == nullptr || out == nullptr) {
+    return false;
+  }
+  if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
+    s += 2;
+  }
+  uint32_t v = 0;
+  uint8_t digits = 0;
+  for (; *s != '\0'; s++) {
+    uint8_t d;
+    if (*s >= '0' && *s <= '9') {
+      d = (uint8_t)(*s - '0');
+    } else if (*s >= 'a' && *s <= 'f') {
+      d = (uint8_t)(*s - 'a' + 10);
+    } else if (*s >= 'A' && *s <= 'F') {
+      d = (uint8_t)(*s - 'A' + 10);
+    } else {
+      return false;
+    }
+    if (++digits > 6) {
+      return false;   // wider than 24 bits: the transmitter would send the low half only
+    }
+    v = (v << 4) | d;
+  }
+  if (digits == 0) {
+    return false;
+  }
+  *out = v;
+  return true;
+}
+
 inline bool parse(const char *json, size_t len, ConfigDoc *out) {
   JsonDocument doc;
   if (deserializeJson(doc, json, len) != DeserializationError::Ok) {
@@ -168,7 +204,26 @@ inline bool parse(const char *json, size_t len, ConfigDoc *out) {
     }
     RemoteConfig &slot = parsed.remotes[parsed.entries++];
     slot.index = (uint8_t)index;
-    slot.address = parseHex(r["addr"] | (const char *)nullptr, rs::ADDR_NONE);
+
+    // **Fail closed on a mistyped flag**, the way an out-of-range index already does.
+    // ArduinoJson's operator| yields the default for any variant that is not the requested
+    // type, so "operational":"false" and "operational":0 both read as *true* — granting a
+    // remote the one flag whose whole purpose is to stop it transmitting. A document from a
+    // template renderer rather than a JSON serialiser is exactly how that happens. An
+    // absent key still takes its default; a present key of the wrong type refuses the whole
+    // document, which surfaces as the existing "did not parse" error.
+    if ((!r["enabled"].isNull() && !r["enabled"].is<bool>()) ||
+        (!r["operational"].isNull() && !r["operational"].is<bool>())) {
+      return false;
+    }
+
+    // Absent means "derive from base". Present means it has to be a real 24-bit address —
+    // never silently collapse a typed-but-wrong one into the derived value.
+    const char *addr = r["addr"] | (const char *)nullptr;
+    slot.address = rs::ADDR_NONE;
+    if (addr != nullptr && !parseAddress(addr, &slot.address)) {
+      return false;
+    }
     slot.enabled = r["enabled"] | true;
     slot.operational = r["operational"] | true;
     const unsigned travel = r["travel"] | 0u;

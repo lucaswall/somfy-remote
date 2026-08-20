@@ -31,7 +31,8 @@ bool Remotes::operational(uint8_t remote) const {
 }
 
 bool Remotes::transmittable(uint8_t remote) const {
-  return remote < count() && enabled(remote) && operational(remote) && hasCounter(remote);
+  return remote < count() && enabled(remote) && operational(remote) && hasCounter(remote) &&
+         !adoptFailed(remote);
 }
 
 bool Remotes::observe(uint8_t remote, uint8_t command) {
@@ -53,10 +54,15 @@ void Remotes::queue(uint8_t remote, SomfyCommand command) {
 }
 
 bool Remotes::adoptCounter(uint8_t remote, uint32_t value) {
-  if (!_store.put(rs::NS_CODE, remote, value)) {
-    logError("remotes   : could not persist adopted counter for remote %u", remote);
+  if (remote >= rs::MAX_REMOTES) {
     return false;
   }
+  if (!_store.put(rs::NS_CODE, remote, value)) {
+    logError("remotes   : could not persist adopted counter for remote %u", remote);
+    _adoptFailed[remote] = true;
+    return false;
+  }
+  _adoptFailed[remote] = false;
   return true;
 }
 
@@ -82,9 +88,10 @@ void Remotes::loop() {
 
   if (!transmittable(next.remote)) {
     logError("remotes   : remote %u not transmittable (%s), %s dropped", next.remote,
-             !hasCounter(next.remote) ? "no rolling code"
-                                      : (!enabled(next.remote) ? "disabled"
-                                                               : "not operational"),
+             !hasCounter(next.remote)  ? "no rolling code"
+             : !enabled(next.remote)   ? "disabled"
+             : !operational(next.remote) ? "not operational"
+                                         : "adopted rolling code is not durable",
              somfyCommandName(next.command));
     return;
   }

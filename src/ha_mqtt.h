@@ -54,6 +54,7 @@ class HaMqtt {
   bool connect();
   void finishReconcile();
   void reconcileCounters();
+  void recheckMirrors();
   void reconcileConfig();
   void loadConfigFromStore();
   void publishDiscovery(uint8_t remote);
@@ -90,6 +91,11 @@ class HaMqtt {
   uint32_t _mirror[rs::MAX_REMOTES] = {0};
   bool _haveMirror[rs::MAX_REMOTES] = {false};
   uint32_t _mirrorSeen[rs::MAX_REMOTES] = {0};
+
+  // Remotes whose mirror arrived after the reconcile window closed, one bit each
+  // (MAX_REMOTES is 30, so a u32 covers every index). Serviced from loop(), never from the
+  // subscribe callback — adopting there would publish from inside PubSubClient's own read.
+  uint32_t _recheckMirror = 0;
 
   char _names[rs::MAX_REMOTES][24] = {};
 

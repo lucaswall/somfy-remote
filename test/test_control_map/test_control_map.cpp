@@ -192,6 +192,25 @@ static void holds_more_than_this_house_needs(void) {
   TEST_ASSERT_GREATER_OR_EQUAL_UINT8(32, ctl::MAX_CONTROLS);
 }
 
+void a_name_with_a_quote_or_backslash_is_refused() {
+  TEST_ASSERT_FALSE(ctl::nameIsAcceptable("Wall \"Gal\" Left"));
+  TEST_ASSERT_FALSE(ctl::nameIsAcceptable("Wall\\Left"));
+}
+
+void a_name_with_a_control_character_is_refused() {
+  TEST_ASSERT_FALSE(ctl::nameIsAcceptable("Wall\tLeft"));
+  TEST_ASSERT_FALSE(ctl::nameIsAcceptable("Wall\nLeft"));   // /log is text/plain: this forges a line
+  TEST_ASSERT_FALSE(ctl::nameIsAcceptable(""));
+  TEST_ASSERT_FALSE(ctl::nameIsAcceptable(nullptr));
+}
+
+// Pinned so a later tightening does not quietly break Spanish names.
+void an_apostrophe_and_accented_bytes_are_accepted() {
+  TEST_ASSERT_TRUE(ctl::nameIsAcceptable("Mar's Shutters"));
+  TEST_ASSERT_TRUE(ctl::nameIsAcceptable("Galer\xc3\xada"));
+  TEST_ASSERT_TRUE(ctl::nameIsAcceptable("Balc\xc3\xb3n Izquierdo"));
+}
+
 int main(void) {
   UNITY_BEGIN();
   RUN_TEST(parses_a_control);
@@ -211,5 +230,8 @@ int main(void) {
   RUN_TEST(removes_a_control);
   RUN_TEST(refuses_to_overflow);
   RUN_TEST(holds_more_than_this_house_needs);
+  RUN_TEST(a_name_with_a_quote_or_backslash_is_refused);
+  RUN_TEST(a_name_with_a_control_character_is_refused);
+  RUN_TEST(an_apostrophe_and_accented_bytes_are_accepted);
   return UNITY_END();
 }

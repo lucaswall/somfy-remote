@@ -59,7 +59,10 @@ void setup() {
   // full synthesiser calibration, and a chip that cannot calibrate never reaches TX.
   const bool tx = radio.transmit();
   Serial.printf("MARCSTATE after STX: 0x%02X\n", radio.readStatus(CC1101_MARCSTATE));
-  radio.idle();
+  // release(), not idle(): idle() is a bare SIDLE and leaves IOCFG0 selecting the chip's
+  // own driver on GDO0, which this sketch is driving as an output. On the failure path
+  // below that state would persist for as long as the board is left running.
+  radio.release();
 
   if (!tx) {
     Serial.println(F("RESULT: FAIL — the chip answers but will not enter transmit."));

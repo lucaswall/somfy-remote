@@ -92,10 +92,21 @@ class Remotes {
   // False means it could not be made durable and the remote must not transmit.
   bool adoptCounter(uint8_t remote, uint32_t value);
 
+  // True when the last adoption for this remote could not be written to the store. The
+  // counter is then whatever the flash still holds — behind the mirror, and behind the
+  // motor — so transmitting would send a code the receiver has already seen.
+  bool adoptFailed(uint8_t remote) const {
+    return remote < rs::MAX_REMOTES && _adoptFailed[remote];
+  }
+
  private:
   SomfyRadio &_radio;
   Store &_store;
   CommandQueue _queue;
   bool _held = false;
   RemoteState _states[rs::MAX_REMOTES];
+
+  // Cleared only by a later adoption that does persist. The send path's own put() must not
+  // clear it: transmittable() blocks that path, so it never runs while this is set.
+  bool _adoptFailed[rs::MAX_REMOTES] = {false};
 };

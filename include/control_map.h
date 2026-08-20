@@ -26,6 +26,24 @@ static const uint8_t NAME_LEN = 40;
 // A dozen wall buttons plus two or three multi-channel handhelds. 1 KB total.
 static const uint8_t MAX_CONTROLS = 32;
 
+// A name reaches three hand-built JSON documents and the log ring, and /log is served as
+// text/plain with no password — so an embedded newline forges a log line. Refusing is what
+// covers that; stripping the bytes silently would not, and would also alter what somebody
+// typed. Bytes at or above 0x80 are UTF-8 continuation bytes, not control characters:
+// accented names must keep working.
+inline bool nameIsAcceptable(const char *name) {
+  if (name == nullptr || *name == '\0') {
+    return false;
+  }
+  for (const char *p = name; *p != '\0'; p++) {
+    const unsigned char c = (unsigned char)*p;
+    if (c == '"' || c == '\\' || c < 0x20 || c == 0x7F) {
+      return false;
+    }
+  }
+  return true;
+}
+
 // The longest name, every index set, and the JSON around them.
 static const size_t PAYLOAD_LEN = 224;
 

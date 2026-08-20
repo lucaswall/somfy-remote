@@ -84,6 +84,14 @@ bool SomfyRadio::send(SomfyCommand command, uint32_t address, uint16_t rollingCo
     // back to unready so the main loop re-runs begin() rather than transmitting into a
     // radio that has stopped listening to us.
     logError("radio     : chip would not enter transmit, reinitialising");
+    // transmit() has already written IOCFG0 = serial data, so the chip is driving GDO0
+    // while this ESP still holds it as an output — two push-pull drivers on one wire until
+    // the 30 s begin() retry or the receiver's backoff happens to take the pin back. Every
+    // sibling failure path releases first (receiver.cpp:119, :155, radio.cpp:65); this one
+    // did not. release() is SIDLE plus one register write and is safe on a chip that will
+    // not calibrate. The ESP keeps driving LOW deliberately — an idle high keys the
+    // transmitter.
+    _cc1101.release();
     _ready = false;
     return false;
   }

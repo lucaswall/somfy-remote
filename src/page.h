@@ -252,7 +252,8 @@ static const char SETTINGS_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
   <p class="warn">Added remotes start <b>not operational</b>, so nothing can transmit for
   one until it has been paired and switched on deliberately.</p>
   <div class="row">
-    <input id="addr" maxlength="8" placeholder="address, optional (e.g. 0x000000)">
+    <input id="addr" maxlength="8" pattern="(0[xX])?[0-9a-fA-F]{1,6}"
+           placeholder="address, optional (e.g. 0x000000)">
     <button style="flex:0 0 92px" onclick="addRemote()">Add</button>
   </div>
 </div>
@@ -339,8 +340,16 @@ async function prog(n){
 }
 
 async function addRemote(){
+  // checkValidity(), because nothing here is a form submit — the pattern above would
+  // otherwise be decorative and the address would reach the server unchecked.
+  const el = $('addr');
+  el.value = el.value.trim();
+  if (el.value !== '' && !el.checkValidity()) {
+    alert('Address must be 1-6 hex digits, optionally 0x-prefixed.');
+    return;
+  }
   if (!confirm('Add a remote?')) return;
-  const a = encodeURIComponent($('addr').value.trim());
+  const a = encodeURIComponent(el.value);
   const r = await fetch(`/api/remote/add?address=${a}`, {method:'POST'});
   alert(await r.text());
   $('addr').value = '';
