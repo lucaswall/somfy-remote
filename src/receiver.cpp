@@ -119,6 +119,13 @@ bool Receiver::attach() {
     _radio.release();
     digitalWrite(_dataPin, LOW);
     pinMode(_dataPin, OUTPUT);
+
+    // **The backoff belongs here, not at the callers.** loop() retries whenever the receiver
+    // is neither attached nor cooling, so a chip that will not enter receive would otherwise
+    // be retried — and logged — on every pass, thousands of times a second.
+    _cooling = true;
+    _muteUntil = millis() + _backoffMs;
+    _backoffMs = _backoffMs * 2 > 60000UL ? 60000UL : _backoffMs * 2;
     return false;
   }
 
@@ -161,12 +168,7 @@ void Receiver::resume() {
   if (_cooling) {
     return;
   }
-  if (!attach()) {
-    // The radio failing, not the receiver. Retry on the backoff; main's own radio retry will
-    // have re-run begin() by then if the chip really has gone.
-    _cooling = true;
-    _muteUntil = millis() + _backoffMs;
-  }
+  attach();   // sets its own backoff if the radio refuses
 }
 
 void Receiver::loop() {
@@ -212,15 +214,12 @@ void Receiver::enforceRateLimit(uint32_t now) {
     return;
   }
 
+  // Stay cooling rather than sit with nothing listening: a receiver that has silently
+  // stopped is indistinguishable from a quiet house. attach() re-arms its own backoff.
   if (_cooling && (int32_t)(now - _muteUntil) >= 0) {
-    if (!attach()) {
-      // Stay cooling rather than sit with nothing listening: a receiver that has silently
-      // stopped is indistinguishable from a quiet house.
-      _muteUntil = now + _backoffMs;
-      _backoffMs = _backoffMs * 2 > 60000UL ? 60000UL : _backoffMs * 2;
-      return;
+    if (attach()) {
+      _cooling = false;
     }
-    _cooling = false;
     return;
   }
 
