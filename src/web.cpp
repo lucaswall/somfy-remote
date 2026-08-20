@@ -88,9 +88,13 @@ void WebUi::start() {
     _server.sendHeader("Cache-Control", "no-store");
     _server.send_P(200, "text/html", PAGE_HTML);
   });
-  // Shared by both pages, and the only thing here worth letting a browser cache.
+  // Shared by every page, and the only thing here worth letting a browser cache. A day was
+  // too long: a firmware update changes this stylesheet, and the phone that had already
+  // cached it kept rendering the old layout with no way to know it was stale. Sixty seconds
+  // still spares the refetch within a session, and a flash shows up on the next reload —
+  // there is no URL version to bust, because the pages are static PROGMEM.
   _server.on("/style.css", HTTP_GET, [this]() {
-    _server.sendHeader("Cache-Control", "max-age=86400");
+    _server.sendHeader("Cache-Control", "max-age=60");
     _server.send_P(200, "text/css", PAGE_CSS);
   });
   _server.on("/settings", HTTP_GET, [this]() { handleSettings(); });
