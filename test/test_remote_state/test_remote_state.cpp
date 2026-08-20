@@ -230,9 +230,9 @@ static void travel_survives_the_rollover(void) {
   TEST_ASSERT_EQUAL(COVER_OPEN, state.position());
 }
 
-// The travel time is a measurement of these shutters, not a guess.
+// The travel time is a measurement of these shutters, not a guess. 20 s, 2026-08-20.
 static void travel_time_matches_the_installation(void) {
-  TEST_ASSERT_EQUAL_UINT32(22000, COVER_TRAVEL_MS);
+  TEST_ASSERT_EQUAL_UINT32(20000, COVER_TRAVEL_MS);
 }
 
 

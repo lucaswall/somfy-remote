@@ -19,7 +19,8 @@ enum CoverPosition {
 
 // How long a shutter takes to travel end to end, when nothing else is configured. A property
 // of the motor and the drop, so every remote carries its own and this is only the fallback.
-#define COVER_TRAVEL_MS 22000
+// 20 s measured on this installation, 2026-08-20.
+#define COVER_TRAVEL_MS 20000
 
 // Home Assistant's convention, and the one the percentage is expressed in throughout.
 #define COVER_PCT_OPEN 100

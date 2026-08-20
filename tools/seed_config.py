@@ -16,6 +16,7 @@ backwards and a device that already has a newer one is not overwritten.
 
 Re-running preserves every field of an existing entry and overwrites only `enabled` and
 `operational` — per-remote `addr` overrides and `travel` times set from the web UI survive.
+`--travel N` additionally sets the same travel time on every remote.
 A `--count` lower than the highest existing index is refused, because an index that falls
 out of the array is cleared rather than left alone; pass --allow-shrink to mean it.
 """
@@ -56,6 +57,9 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--allow-shrink", action="store_true",
                     help="permit a --count that drops existing indices and their overrides")
+    ap.add_argument("--travel", type=int,
+                    help="end-to-end travel seconds, applied to every remote; omit to "
+                         "leave each remote's own value alone")
     args = ap.parse_args()
 
     if not args.base:
@@ -117,6 +121,10 @@ def main():
         # A shutter known not to work is refused in the send path, not merely left out of
         # automations.
         entry["operational"] = i not in blocked
+        # Only when asked. Omitting the flag leaves whatever each remote already carries,
+        # which is the point of preserving entries in the first place.
+        if args.travel is not None:
+            entry["travel"] = args.travel
         remotes.append(entry)
 
     doc = {
