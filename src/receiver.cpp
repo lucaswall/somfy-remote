@@ -285,6 +285,7 @@ void Receiver::applyEdges() {
     if (_decoder.takeChecksumFailure()) {
       _captureFrozen = true;
     }
+
     if (!decoded) {
       continue;
     }

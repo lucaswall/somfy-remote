@@ -21,17 +21,25 @@ Seven bytes, transmitted most significant bit first.
 
 | Byte | Contents |
 |---|---|
-| 0 | `0xA0` \| something. Often called an encryption key; it is neither secret nor checked |
+| 0 | Often called an encryption key; it is neither secret nor checked. See below |
 | 1 | Command in the high nibble, checksum in the low nibble |
 | 2–3 | Rolling code, big endian |
 | 4–6 | The remote's 24-bit address, big endian |
 
-**The key byte's low nibble varies.** Every transmitter in the wild, this one included,
-sends `0xA7` — but real handhelds do not hold it constant: captures show one remote sending
-`0xA1` then `0xA3` on consecutive presses, and ESPSomfy-RTS transmits `0xA0 | (rolling code
-& 0x0F)`. A receiver may therefore test the high nibble and must ignore the low one. Testing
-the whole byte throws away fifteen presses in sixteen, and the low nibble is the one part of
-a frame that can be corrupted with no consequence at all.
+**The key byte must not be tested at all.** Every transmitter in the wild is documented as
+sending `0xA7`, and handhelds do not even hold that constant: captures show one remote
+sending `0xA1` then `0xA3` on consecutive presses, and ESPSomfy-RTS transmits
+`0xA0 | (rolling code & 0x0F)`. So the received value was once compared against its high
+nibble only.
+
+That is still too strict. **The wall switches in this installation send `0x8F` and `0xF6`** —
+sixteen consecutive frames, every checksum clean, one stable address per device, commands
+that match the button pressed. A high-nibble comparison made every one of them unhearable,
+and because a rejected frame was counted as a checksum failure, the symptom read as noise
+rather than as a device being refused.
+
+This firmware therefore reports byte 0 and judges nothing. What keeps noise out is the
+two-copy rule below, not this byte.
 
 **Checksum.** XOR of all fourteen nibbles of the frame, computed while the checksum nibble
 itself is still zero, then written into that nibble. A correct frame therefore XORs down to
@@ -50,10 +58,15 @@ bytes** — `plain[i] = frame[i] ^ frame[i-1]` and `plain[i+1] = frame[i+1] ^ fr
 two identical contributions to a checksum that is only an XOR of nibbles cancel exactly. The
 frame still sums to zero.
 
-Only two of the seven bytes are protected: byte 0 by the `0xA7` comparison, and byte 6
-because nothing follows it to cancel against. Forty of the fifty-six possible single-bit
-flips decode cleanly, every one of them as a *different* address, rolling code or command.
-`test_somfy_frame` asserts the number so it cannot quietly get worse.
+Only byte 6 is protected, because nothing follows it to cancel against. Forty-eight of the
+fifty-six possible single-bit flips decode cleanly, and forty-four of those come out as a
+*different* address, rolling code or command. `test_somfy_frame` asserts both numbers so
+they cannot quietly get worse.
+
+Byte 0 is worth understanding here. It reaches no reported field directly, but it XORs into
+`plain[1]`, so a flip in its **high** nibble changes the decoded command while leaving the
+address and rolling code intact. Dropping the key comparison is what admits those four
+cases; the two-copy rule is what makes them harmless.
 
 The consequence is the whole design of the receive path: a corrupted frame does not look
 corrupt, it looks like another remote. A press is therefore only believed once two copies

@@ -10,12 +10,14 @@
 #define SOMFY_FRAME_LEN 7
 #define SOMFY_FRAME_BITS 56
 
-// Byte 0, the so-called encryption key: neither secret nor checked by the motor. Every
-// transmitter sends 0xA7, but **a receiver may only test the high nibble** — real handhelds
-// vary the low one, sending 0xA1 then 0xA3 on consecutive presses.
+// Byte 0, the so-called encryption key: neither secret nor checked by the motor, and **not
+// checked here either.** Every transmitter is documented as sending 0xA7 and handhelds vary
+// the low nibble across presses, but the wall switches in this house send 0x8F and 0xF6 —
+// sixteen consecutive frames, every checksum clean, one stable address. Testing even the
+// high nibble made those devices permanently unhearable, which is a far worse failure than
+// the 1/16 of noise the test rejected. What keeps noise out is two frames agreeing on
+// address, rolling code and command.
 #define SOMFY_KEY 0xA7
-#define SOMFY_KEY_MASK 0xF0
-#define SOMFY_KEY_HIGH 0xA0
 
 // The buttons this bridge exposes. The protocol defines five more (MyUp 0x3, MyDown 0x5,
 // UpDown 0x6, SunFlag 0x9, Flag 0xA); they are in docs/somfy-rts.md rather than here,
@@ -64,13 +66,11 @@ struct SomfyHeard {
 // The inverse of somfyBuildFrame(). The checksum is four bits, so one frame in sixteen of
 // pure noise passes it — there is no more entropy in the protocol, which is why a press is
 // only believed after two copies agree.
+//
+// Worse than four bits, in fact: an interior obfuscated byte feeds two plaintext bytes, so
+// a single-byte corruption flips the same bit in both and cancels in an XOR checksum. Only
+// the last byte is fully covered.
 inline bool somfyParseFrame(const uint8_t *frame, SomfyHeard *out) {
-  // High nibble only — see SOMFY_KEY. Rejection power is therefore 1/16, not 1/256, which
-  // is why the two-copy rule compares address, rolling code *and* command.
-  if ((frame[0] & SOMFY_KEY_MASK) != SOMFY_KEY_HIGH) {
-    return false;
-  }
-
   // Backwards from the end: each byte was XORed with the *already obfuscated* one before it,
   // so the source of every step is still intact ahead of us.
   uint8_t plain[SOMFY_FRAME_LEN];
