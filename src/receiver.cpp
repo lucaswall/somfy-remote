@@ -200,6 +200,26 @@ void Receiver::loop() {
     _edgeRate = total - _lastRateCount;
     _lastRateCount = total;
     _lastRateAt = now;
+
+    // **A chip that has fallen out of receive looks exactly like a quiet house.** The
+    // interrupt is still attached, the pin simply stops moving, and every counter freezes
+    // at the value it had — so nothing above this line can tell the difference. On
+    // 2026-08-20 the radio sat in RXFIFO_OVERFLOW for six hours while /status reported
+    // "listening" and the presses that should have closed the gallery were logged as sent.
+    //
+    // Recovered through the same backoff a noise storm uses, so a chip that will not stay
+    // in receive cannot spin here: attach() re-enters RX with the FIFO flushed, and gives
+    // up for progressively longer if it keeps failing.
+    if (_attached) {
+      const uint8_t state = _radio.marcState();
+      if (state != CC1101_STATE_RX) {
+        logError("receiver  : chip left receive (marcstate 0x%02X), restarting it", state);
+        detach();
+        _cooling = true;
+        _muteUntil = now + _backoffMs;
+        _backoffMs = _backoffMs * 2 > 60000UL ? 60000UL : _backoffMs * 2;
+      }
+    }
   }
 }
 

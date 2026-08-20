@@ -15,6 +15,7 @@ static const uint8_t SRES = 0x30;
 static const uint8_t SRX = 0x34;
 static const uint8_t STX = 0x35;
 static const uint8_t SIDLE = 0x36;
+static const uint8_t SFRX = 0x3A;
 
 // Configuration registers used below.
 static const uint8_t REG_IOCFG0 = 0x02;
@@ -87,12 +88,25 @@ bool CC1101::present() {
   return version != 0x00 && version != 0xFF;
 }
 
+// The one documented exit from RXFIFO_OVERFLOW, which SIDLE alone does not clear. A chip
+// left in that state is both deaf and unkeyable, and it does not announce itself: on
+// 2026-08-20 this radio held MARCSTATE 0x11 for six hours while the bridge reported itself
+// healthy, heard nothing, and logged every press as sent. SFRX is legal in IDLE and in
+// RXFIFO_OVERFLOW, which are the only two states SIDLE can leave the chip in here.
+void CC1101::idleAndFlush() {
+  strobe(SIDLE);
+  strobe(SFRX);
+}
+
 // **IOCFG0 returns to serial data before STX**, so the chip transmits under exactly the
 // register state every motor in this house is already paired against. The high-impedance
 // value is an *idle* setting: §11.2 says the chip takes GDO0 as an input while transmitting,
 // and says nothing about IDLE, which is where this radio spends almost all its life.
+//
+// The flush is not transmit configuration and does not touch the waveform: it only ensures
+// a wedged receive FIFO cannot stop a press from being keyed.
 bool CC1101::transmit() {
-  strobe(SIDLE);
+  idleAndFlush();
   writeRegister(REG_IOCFG0, GDO0_SERIAL_DATA);
   strobe(STX);
   // Returning before the synthesiser settles would put the first sync pulse on the air with
@@ -102,7 +116,7 @@ bool CC1101::transmit() {
 
 // From here the chip drives GDO0; the caller must already have made its side an input.
 bool CC1101::receive() {
-  strobe(SIDLE);
+  idleAndFlush();
   writeRegister(REG_IOCFG0, GDO0_SERIAL_DATA);
   strobe(SRX);
   return waitForState(CC1101_STATE_RX);

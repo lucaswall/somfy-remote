@@ -71,6 +71,9 @@ class CC1101 {
   bool select();
   void deselect();
   void strobe(uint8_t command);
+  // SIDLE, then flush the RX FIFO. Both entries into a radio mode go through it: SIDLE on
+  // its own cannot leave RXFIFO_OVERFLOW, and a chip parked there is deaf and unkeyable.
+  void idleAndFlush();
   void writeRegister(uint8_t address, uint8_t value);
   void writeBurst(uint8_t address, const uint8_t *values, uint8_t count);
   void reset();
