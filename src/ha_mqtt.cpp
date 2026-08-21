@@ -801,14 +801,30 @@ void HaMqtt::publishBridgeDiscovery() {
   char url[48];
   snprintf(url, sizeof(url), "http://%s/", WiFi.localIP().toString().c_str());
 
-  static const char *const KEY[4] = {"free", "spent", "sector", "heap"};
-  static const char *const LABEL[4] = {"Store free slots", "Store faults", "Store sector",
-                                       "Free heap"};
-  static const char *const ICON[4] = {"mdi:database", "mdi:alert-circle-outline",
-                                      "mdi:database-marker", "mdi:memory"};
+  // **state_class is what makes these worth publishing at all.** Recorder purges raw states
+  // after ten days; a sensor carrying a state_class also feeds long-term statistics, which
+  // are kept indefinitely at five-minute and hourly resolution. Without it the answer to
+  // "when did this start" expires in a week and a half.
+  //
+  // The receiver counters are total_increasing: they reset to zero on a reboot, and that is
+  // the drop Home Assistant already knows how to read as a new cycle rather than as a
+  // negative. Peak is a high-water mark, so measurement, which keeps min/mean/max.
+  static const uint8_t SENSORS = 8;
+  static const char *const KEY[SENSORS] = {"free",  "spent",     "sector", "heap",
+                                           "mutes", "overflows", "frames", "peak"};
+  static const char *const LABEL[SENSORS] = {
+      "Store free slots", "Store faults",           "Store sector",   "Free heap",
+      "Receiver mutes",   "Receiver ring overflows", "Frames decoded", "Peak edge rate"};
+  static const char *const ICON[SENSORS] = {
+      "mdi:database",   "mdi:alert-circle-outline", "mdi:database-marker", "mdi:memory",
+      "mdi:volume-off", "mdi:tray-full",            "mdi:radio-tower",     "mdi:pulse"};
+  // Empty means none: a sector letter is not a number and neither store field is a total.
+  static const char *const CLASS[SENSORS] = {
+      "", "", "", "", "total_increasing", "total_increasing", "total_increasing",
+      "measurement"};
 
   char object[OBJECT_ID_LEN], topic[DISCOVERY_TOPIC_LEN], payload[PAYLOAD_LEN];
-  for (uint8_t i = 0; i < 4; i++) {
+  for (uint8_t i = 0; i < SENSORS; i++) {
     JsonDocument doc;
     JsonObject device = doc["device"].to<JsonObject>();
     device["identifiers"][0] = MQTT_DEVICE_ID;
@@ -823,6 +839,9 @@ void HaMqtt::publishBridgeDiscovery() {
     doc["name"] = LABEL[i];
     doc["icon"] = ICON[i];
     doc["entity_category"] = "diagnostic";
+    if (CLASS[i][0] != '\0') {
+      doc["state_class"] = CLASS[i];
+    }
     char tmpl[40];
     snprintf(tmpl, sizeof(tmpl), "{{ value_json.%s }}", KEY[i]);
     doc["value_template"] = tmpl;
@@ -852,6 +871,28 @@ void HaMqtt::publishBridgeDiscovery() {
   discoveryTopic(topic, sizeof(topic), HA_DISCOVERY_PREFIX, "binary_sensor", object);
   const size_t written = serializeJson(doc, payload, sizeof(payload));
   if (written < sizeof(payload) - 1) {
+    _mqtt.publish(topic, payload, true);
+  }
+
+  // The one worth an automation. A bridge that is deaf still answers its web page, still
+  // reports itself online, and still logs every press as sent — the availability topic
+  // cannot see it, because the fault is the radio rather than the board. This is the only
+  // thing that turns six hours of silence into a notification.
+  JsonDocument radio;
+  JsonObject radioDevice = radio["device"].to<JsonObject>();
+  radioDevice["identifiers"][0] = MQTT_DEVICE_ID;
+  radioDevice["name"] = "Somfy Bridge";
+  radio["availability_topic"] = availability;
+  radio["state_topic"] = health;
+  radio["name"] = "Radio not receiving";
+  radio["entity_category"] = "diagnostic";
+  radio["device_class"] = "problem";
+  radio["value_template"] = "{{ 'OFF' if value_json.rx else 'ON' }}";
+  snprintf(object, sizeof(object), "%s_radio_rx", MQTT_DEVICE_ID);
+  radio["unique_id"] = object;
+  discoveryTopic(topic, sizeof(topic), HA_DISCOVERY_PREFIX, "binary_sensor", object);
+  const size_t radioWritten = serializeJson(radio, payload, sizeof(payload));
+  if (radioWritten < sizeof(payload) - 1) {
     _mqtt.publish(topic, payload, true);
   }
 }
@@ -905,14 +946,27 @@ void HaMqtt::publishControlRemoval(uint32_t address) {
   _mqtt.publish(topic, "", true);
 }
 
+// **The only radio health that outlives a reboot.** Both log rings are RAM, so the fault
+// that resets the board erases the evidence for it — which is exactly what happened on
+// 2026-08-20, when a wedged radio went unnoticed for six hours and the run that hung took
+// its log with it. Home Assistant's recorder keeps what is published here.
+//
+// Every radio field is a flag or a high-water mark, deliberately. A level that moves on
+// every sample — the live edge rate, RSSI — writes a recorder row a minute forever and
+// answers nothing a live read of /status would not. A counter that is flat until something
+// goes wrong costs almost nothing to store and puts the moment it went wrong on a graph.
 void HaMqtt::publishHealth() {
-  char topic[TOPIC_LEN], payload[192];
+  const Receiver::Stats rx = _receiver.stats();
+  char topic[TOPIC_LEN], payload[256];
   topicHealth(topic, sizeof(topic), MQTT_DEVICE_ID);
   snprintf(payload, sizeof(payload),
            "{\"free\":%u,\"spent\":%u,\"sector\":\"%c\",\"heap\":%u,"
-           "\"degraded\":%s,\"epoch\":%lu}",
+           "\"degraded\":%s,\"epoch\":%lu,"
+           "\"rx\":%s,\"mutes\":%u,\"overflows\":%lu,\"frames\":%lu,\"peak\":%u}",
            _store.freeSlots(), _store.spent(), _store.activeName(), ESP.getFreeHeap(),
-           _store.degraded() ? "true" : "false", (unsigned long)_config.epoch);
+           _store.degraded() ? "true" : "false", (unsigned long)_config.epoch,
+           rx.marcState == CC1101_STATE_RX ? "true" : "false", rx.mutes,
+           (unsigned long)rx.overflows, (unsigned long)rx.frames, rx.peakRate);
   _mqtt.publish(topic, payload, true);
 }
 
