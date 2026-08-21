@@ -143,6 +143,7 @@ class Receiver {
   uint16_t _ignored = 0;
   uint32_t _muteUntil = 0;
   uint32_t _backoffMs = 1000;
+  uint8_t _attachFailures = 0;
   uint32_t _cleanSince = 0;
   uint32_t _lastRateAt = 0;
   uint32_t _lastRateCount = 0;

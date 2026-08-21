@@ -172,7 +172,17 @@ void CC1101::configure() {
   writeRegister(REG_IOCFG0, GDO0_HIGH_Z);
 
   // ASK/OOK. Manchester off: the encoding is in the waveform we generate, not the chip's.
-  writeRegister(REG_MDMCFG2, 0x32);
+  //
+  // SYNC_MODE 000, not the 010 this carried until 2026-08-20. Sync word detection arms the
+  // packet engine, and an armed packet engine in asynchronous mode fills a FIFO nothing
+  // reads: noise false-triggers it, the RX FIFO overflows, and the chip parks in
+  // RXFIFO_OVERFLOW where it is deaf and cannot be keyed. That is what took the bridge out
+  // for six hours. With no sync word there is no packet to start and the FIFO stays empty.
+  //
+  // **The transmit-bearing bits of this register are byte-identical.** MOD_FORMAT (6:4) is
+  // still 011 and MANCHESTER_EN (3) is still 0; only SYNC_MODE (2:0) moves. The PA follows
+  // GDO0 directly in asynchronous mode, and sync detection is not in that path.
+  writeRegister(REG_MDMCFG2, 0x30);
   // Channel filter and data rate. Both are receive-side in this mode, and are written to
   // keep the register set identical to the configuration the deployed bridge uses.
   writeRegister(REG_MDMCFG4, 0x87);

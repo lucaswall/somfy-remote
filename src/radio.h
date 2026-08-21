@@ -21,6 +21,13 @@ class SomfyRadio {
   bool begin();
   bool ready() const { return _ready; }
 
+  // Hands the chip back to the main loop's 30 s begin() retry, which is the only path that
+  // reaches SRES and rewrites the register set. The receiver calls it once re-entering
+  // receive has failed often enough that the fault is not one SRX can clear. Commands stay
+  // queued while a radio is unready rather than being dropped, so a press that lands during
+  // the reset survives it.
+  void markFaulted() { _ready = false; }
+
   // Told rather than asked, so no caller can forget: a command arriving while the chip is
   // listening would put two push-pull drivers on one wire.
   void listener(Receiver *receiver) { _receiver = receiver; }

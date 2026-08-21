@@ -34,6 +34,11 @@
 
 #define PRESS_SLOTS 4
 
+// Five attempts across the doubling backoff is about half a minute of a chip refusing to
+// receive — long enough that it is not a passing noise storm, short enough that a bridge
+// does not spend the night deaf.
+#define ATTACH_FAILURES_BEFORE_RESET 5
+
 static volatile uint32_t ringEntries[RING_SIZE];
 static volatile uint16_t ringHead = 0;
 static uint16_t ringTail = 0;   // written only by the main loop
@@ -126,8 +131,22 @@ bool Receiver::attach() {
     _cooling = true;
     _muteUntil = millis() + _backoffMs;
     _backoffMs = _backoffMs * 2 > 60000UL ? 60000UL : _backoffMs * 2;
+
+    // Retrying SRX forever is what left the chip wedged for six hours: the fault was in the
+    // register set, and nothing short of SRES was ever going to rewrite it. Past the
+    // threshold the radio is handed back for a full reinitialisation instead. Cleared as it
+    // fires so a radio that comes back and falls over again has to earn its next reset
+    // rather than triggering one on every retry.
+    if (++_attachFailures >= ATTACH_FAILURES_BEFORE_RESET) {
+      logError("receiver  : %u failed attempts to receive, resetting the radio",
+               _attachFailures);
+      _radio.markFaulted();
+      _attachFailures = 0;
+    }
     return false;
   }
+
+  _attachFailures = 0;
 
   isrMuted = false;
   isrWindowEdges = 0;
