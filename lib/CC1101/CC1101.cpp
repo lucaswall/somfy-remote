@@ -8,6 +8,7 @@ static const SPISettings SPI_SETTINGS(4000000, MSBFIRST, SPI_MODE0);
 
 // Header bits.
 static const uint8_t WRITE_BURST = 0x40;
+static const uint8_t READ_SINGLE = 0x80;
 static const uint8_t READ_BURST = 0xC0;
 
 // Strobes.
@@ -301,7 +302,7 @@ bool CC1101::readConfig(uint8_t address, uint8_t *out) {
   }
   const bool ready = select();
   if (ready) {
-    SPI.transfer((uint8_t)(address | 0x80));
+    SPI.transfer((uint8_t)(address | READ_SINGLE));
     *out = SPI.transfer(0);
   }
   deselect();
