@@ -59,6 +59,9 @@ class CC1101 {
 
   uint8_t readStatus(uint8_t address);
 
+  // Configuration only: reject status/strobe/FIFO addresses before touching SPI.
+  bool readConfig(uint8_t address, uint8_t *out);
+
   // Current RSSI in dBm — §17.3's conversion with this band's 74 dB offset. Only meaningful
   // in receive; in IDLE the chip holds whatever it measured last. Worth having because a
   // control that is never heard and a control that is not transmitting produce identical

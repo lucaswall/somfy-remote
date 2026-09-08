@@ -4,6 +4,7 @@
 
 #include "radio.h"
 #include "remotes.h"
+#include "rx_diagnostics.h"
 #include "somfy_decoder.h"
 
 // Hearing the handhelds already in the house, so a shutter opened by hand stops reading
@@ -98,13 +99,18 @@ class Receiver {
   };
   Stats stats();
   uint32_t edgesPerSecond() const { return _edgeRate; }
+  const RadioSnapshot &radioSnapshot() const { return _radioSnapshot; }
+  const RxDwell &dwell();
 
  private:
   void applyEdges();
   void recordSighting(const SomfyPress &press);
   void enforceRateLimit(uint32_t now);
   bool attach();
-  void detach();
+  void detach(bool captureMute = false);
+  void captureRadioSnapshot();
+  RxDwell _dwell;
+  RadioSnapshot _radioSnapshot;
 
   // Sampled on a timer rather than tied to a decode: the case worth measuring is the press
   // that never becomes a frame, and there is nothing to hang a reading on then.

@@ -149,7 +149,7 @@ for one. Everything under `/settings` is behind the same login.
 | `GET /controls` | Naming the physical handhelds and wall buttons. **Password.** |
 | `GET /api/state` | State as JSON, plus IP, RSSI, uptime, heap and queue depth. Polled by both pages |
 | `POST /api/send` | `?remote=<n>&command=Up\|My\|Down`. Refuses `Prog` |
-| `GET /status` | Snapshot: build stamp, reset reason, uptime, heap, WiFi, store, and a line per remote |
+| `GET /status` | Build, reset, uptime, heap, WiFi, store, remotes, receive/mute dwell and first-mute register snapshot |
 | `GET /log` | The console ring as plain text, oldest first |
 | `GET /errors` | Faults only, from a separate smaller ring |
 | `GET /settings` | Administration. **Password.** |

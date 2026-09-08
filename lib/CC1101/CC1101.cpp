@@ -295,6 +295,19 @@ void CC1101::writeBurst(uint8_t address, const uint8_t *values, uint8_t count) {
   deselect();
 }
 
+bool CC1101::readConfig(uint8_t address, uint8_t *out) {
+  if (address > 0x2E || out == nullptr) {
+    return false;
+  }
+  const bool ready = select();
+  if (ready) {
+    SPI.transfer((uint8_t)(address | 0x80));
+    *out = SPI.transfer(0);
+  }
+  deselect();
+  return ready;
+}
+
 // Status registers share their addresses with the command strobes, so they are only
 // reachable with the burst bit set — a single-access read fires the strobe instead.
 // Read twice and require agreement: a read that lands on the chip's own update of that

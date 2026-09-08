@@ -46,6 +46,7 @@ class SomfyRadio {
   uint8_t marcState() { return _cc1101.readStatus(CC1101_MARCSTATE); }
 
   int16_t rssiDbm() { return _cc1101.rssiDbm(); }
+  bool readConfig(uint8_t address, uint8_t *out) { return _cc1101.readConfig(address, out); }
 
   // Plays one press: the wake-up burst, a frame, and the repeats a receiver needs to hear
   // it. Blocks for about eight hundred milliseconds, which is why commands are queued

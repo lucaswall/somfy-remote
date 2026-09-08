@@ -778,6 +778,46 @@ void WebUi::handleStatus() {
            : rx.pressesDropped > 0 ? "  PRESSES DROPPED"
                                    : "");
   out.add(line);
+
+  const RxDwell &dwell = _receiver.dwell();
+  const RxDwell::Window windows[] = {dwell.last(), dwell.current()};
+  for (uint8_t i = 0; i < 2; ++i) {
+    const auto &w = windows[i];
+    const uint16_t rxDuty = w.permille(RxDwell::Receiving);
+    const uint16_t muteDuty = w.permille(RxDwell::Muted);
+    snprintf(line, sizeof(line),
+             "rx dwell: %s end %lu ms, span %lu ms; enabled %lu, muted %lu, "
+             "suspended %lu, inactive %lu ms; duty %u.%u%% / %u.%u%%\n",
+             i == 0 ? "last minute" : "partial", (unsigned long)w.endMs,
+             (unsigned long)w.duration(), (unsigned long)w.ms[RxDwell::Receiving],
+             (unsigned long)w.ms[RxDwell::Muted], (unsigned long)w.ms[RxDwell::Suspended],
+             (unsigned long)w.ms[RxDwell::Inactive], rxDuty / 10, rxDuty % 10,
+             muteDuty / 10, muteDuty % 10);
+    out.add(line);
+  }
+  out.add("rx dwell: software receive-enabled time, not proof of continuous RX or decoded RF\n");
+
+  const RadioSnapshot &snapshot = _receiver.radioSnapshot();
+  if (!snapshot.attempted) {
+    out.add("rx config: pending first sustained overload mute (no forced capture)\n");
+  } else {
+    snprintf(line, sizeof(line),
+             "rx config: first mute %u at %lu ms, marcstate 0x%02X; "
+             "mismatch 0x%04X invalid 0x%04X (frozen until reboot)\n",
+             snapshot.mute, (unsigned long)snapshot.atMs, snapshot.marcState,
+             snapshot.mismatches, snapshot.invalid);
+    out.add(line);
+    for (uint8_t i = 0; i < RADIO_REGISTER_COUNT; ++i) {
+      const auto &reg = RADIO_REGISTERS[i];
+      const uint16_t bit = (uint16_t)(1u << i);
+      snprintf(line, sizeof(line),
+               "rx reg  : %-8s [0x%02X] expected 0x%02X actual 0x%02X / 0x%02X %s\n",
+               reg.name, reg.address, reg.expected, snapshot.actual[i], snapshot.again[i],
+               (snapshot.invalid & bit) ? "INVALID (read failed or disagreed)"
+               : (snapshot.mismatches & bit) ? "MISMATCH" : "match");
+      out.add(line);
+    }
+  }
   out.flush();
   _server.sendContent("");
 }

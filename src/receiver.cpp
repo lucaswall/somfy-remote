@@ -108,6 +108,12 @@ static void IRAM_ATTR onEdge() {
 void Receiver::begin(uint8_t dataPin) {
   _dataPin = dataPin;
   isrPin = dataPin;
+  _dwell.begin(millis());
+}
+
+const RxDwell &Receiver::dwell() {
+  _dwell.advance(millis());
+  return _dwell;
 }
 
 // **The pin turns round here, and the order is the safety argument.** The chip's driver is
@@ -129,6 +135,7 @@ bool Receiver::attach() {
     // is neither attached nor cooling, so a chip that will not enter receive would otherwise
     // be retried — and logged — on every pass, thousands of times a second.
     _cooling = true;
+    _dwell.set(millis(), RxDwell::Muted);
     _muteUntil = millis() + _backoffMs;
     _backoffMs = _backoffMs * 2 > 60000UL ? 60000UL : _backoffMs * 2;
 
@@ -162,28 +169,51 @@ bool Receiver::attach() {
 
   attachInterrupt(digitalPinToInterrupt(_dataPin), onEdge, CHANGE);
   _attached = true;
+  _dwell.set(millis(), RxDwell::Receiving);
   return true;
 }
 
-void Receiver::detach() {
+void Receiver::detach(bool captureMute) {
   if (!_attached) {
     return;
   }
   detachInterrupt(digitalPinToInterrupt(_dataPin));
   _attached = false;
+  _dwell.set(millis(), _suspended ? RxDwell::Suspended : RxDwell::Muted);
+  if (captureMute && !_radioSnapshot.attempted) {
+    captureRadioSnapshot();
+  }
   _radio.release();
   digitalWrite(_dataPin, LOW);   // before the driver is enabled: an idle high keys the PA
   pinMode(_dataPin, OUTPUT);
+}
+
+void Receiver::captureRadioSnapshot() {
+  // ISR detached, chip still in its active configuration: release() changes IOCFG0.
+  _radioSnapshot.attempted = true;
+  _radioSnapshot.atMs = millis();
+  _radioSnapshot.mute = _mutes + 1;
+  _radioSnapshot.marcState = _radio.marcState();
+  for (uint8_t i = 0; i < RADIO_REGISTER_COUNT; ++i) {
+    uint8_t value = 0, again = 0;
+    const bool ok = _radio.readConfig(RADIO_REGISTERS[i].address, &value);
+    const bool okAgain = _radio.readConfig(RADIO_REGISTERS[i].address, &again);
+    _radioSnapshot.add(i, ok, okAgain, value, again);
+  }
+  logLine("rx config : first mute, mismatch 0x%04X invalid 0x%04X",
+          _radioSnapshot.mismatches, _radioSnapshot.invalid);
 }
 
 // Resume restores what suspend found: a receiver that was cooling stays cooling.
 void Receiver::suspend() {
   _suspended = true;
   detach();
+  _dwell.set(millis(), RxDwell::Suspended);
 }
 
 void Receiver::resume() {
   _suspended = false;
+  _dwell.set(millis(), _cooling ? RxDwell::Muted : RxDwell::Inactive);
   if (_cooling) {
     return;
   }
@@ -192,6 +222,7 @@ void Receiver::resume() {
 
 void Receiver::loop() {
   const uint32_t now = millis();
+  _dwell.advance(now);
 
   if (_suspended) {
     return;
@@ -261,7 +292,7 @@ void Receiver::sampleRssi(uint32_t now) {
 
 void Receiver::enforceRateLimit(uint32_t now) {
   if (_attached && isrMuted) {
-    detach();
+    detach(true);
     isrMuted = false;
     _cooling = true;
     _mutes++;
