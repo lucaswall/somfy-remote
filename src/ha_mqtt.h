@@ -5,6 +5,7 @@
 
 #include "config_doc.h"
 #include "control_map.h"
+#include "mqtt_announcement.h"
 #include "receiver.h"
 #include "record_store.h"
 #include "remotes.h"
@@ -58,21 +59,28 @@ class HaMqtt {
  private:
   bool connect();
   void finishReconcile();
+  void serviceAnnouncement();
+  void abortAnnouncement();
   void reconcileCounters();
   void recheckMirrors();
   void reconcileConfig();
   void loadConfigFromStore();
+  bool publishMqtt(const char *topic, const char *payload, bool retained);
+  bool subscribeMqtt(const char *topic);
   void publishDiscovery(uint8_t remote);
+  bool publishDiscoveryPart(uint8_t remote, uint8_t entity);
   void publishState(uint8_t remote);
-  void publishPosition(uint8_t remote);
+  bool publishStatePart(uint8_t remote, uint8_t part);
+  bool publishPosition(uint8_t remote);
   void applyTravelTimes();
-  void publishCounter(uint8_t remote, bool force = false);
-  void publishBridgeDiscovery();
+  bool publishCounter(uint8_t remote, bool force = false);
+  bool publishBridgeDiscoveryPart(uint8_t part);
   bool publishControlDiscovery(const ctl::Control &control);
+  bool publishControlConfig(const ctl::Control &control);
   bool republishControl(const ctl::Control &control);
   void publishControlRemoval(uint32_t address);
   void applyHeardPresses();
-  void publishHealth();
+  bool publishHealth();
   void publishConfigDocument();
   void onMessage(const char *topic, const uint8_t *payload, unsigned int length);
 
@@ -101,6 +109,8 @@ class HaMqtt {
   // (MAX_REMOTES is 30, so a u32 covers every index). Serviced from loop(), never from the
   // subscribe callback — adopting there would publish from inside PubSubClient's own read.
   uint32_t _recheckMirror = 0;
+
+  mqtt_announcement::Sequence _announcement;
 
   // ctl::NAME_LEN, so there is one definition of "as long as a name gets" rather than a
   // second, shorter one here. At 24 these were cut to 23 characters and "Gallery Shutters

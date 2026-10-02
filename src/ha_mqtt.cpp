@@ -115,6 +115,9 @@ void HaMqtt::loop() {
       _remotes.hold(false);
       logError("mqtt      : connection lost mid-reconcile, commands released");
     }
+    if (_announcement.active()) {
+      abortAnnouncement();
+    }
     const uint32_t now = millis();
     if (_attempted && !elapsed(now, _lastAttempt, _retryMs)) {
       return;
@@ -144,6 +147,11 @@ void HaMqtt::loop() {
       return;
     }
     finishReconcile();
+    return;
+  }
+
+  if (_announcement.active()) {
+    serviceAnnouncement();
     return;
   }
 
@@ -202,6 +210,24 @@ void HaMqtt::loop() {
   }
 }
 
+bool HaMqtt::publishMqtt(const char *topic, const char *payload, bool retained) {
+  if (!_mqtt.connected() || !_mqtt.publish(topic, payload, retained)) {
+    // PubSubClient has already written the packet prefix when Client::write() returns
+    // short. No later packet may follow that prefix on the same TCP stream.
+    _wifi.stop();
+    return false;
+  }
+  return true;
+}
+
+bool HaMqtt::subscribeMqtt(const char *topic) {
+  if (!_mqtt.connected() || !_mqtt.subscribe(topic)) {
+    _wifi.stop();
+    return false;
+  }
+  return true;
+}
+
 // **Nothing here transmits, queues a command, or touches a rolling code.** A foreign
 // counter and one of ours are different address spaces and must never meet.
 void HaMqtt::applyHeardPresses() {
@@ -219,7 +245,7 @@ void HaMqtt::applyHeardPresses() {
     topicControlPress(topic, sizeof(topic), MQTT_DEVICE_ID, press.address);
     snprintf(payload, sizeof(payload), "{\"event_type\":\"%x\",\"code\":%u}",
              press.command, press.rollingCode);
-    _mqtt.publish(topic, payload, false);
+    publishMqtt(topic, payload, false);
 
     uint8_t applied = 0;
     for (uint8_t i = 0; i < rs::MAX_REMOTES; i++) {
@@ -238,13 +264,14 @@ void HaMqtt::applyHeardPresses() {
 // Shared by the naming UI and the reconnect path: a control that exists only in RAM
 // disappears with the next restart.
 bool HaMqtt::republishControl(const ctl::Control &control) {
+  return publishControlConfig(control) && publishControlDiscovery(control);
+}
+
+bool HaMqtt::publishControlConfig(const ctl::Control &control) {
   char topic[TOPIC_LEN], payload[ctl::PAYLOAD_LEN];
   topicControl(topic, sizeof(topic), MQTT_DEVICE_ID, control.address);
   const size_t written = ctl::serialise(control, payload, sizeof(payload));
-  if (written == 0 || !_mqtt.publish(topic, payload, true)) {
-    return false;
-  }
-  return publishControlDiscovery(control);
+  return written != 0 && publishMqtt(topic, payload, true);
 }
 
 HaMqtt::SaveResult HaMqtt::saveControl(const ctl::Control &control) {
@@ -266,7 +293,7 @@ HaMqtt::SaveResult HaMqtt::saveControl(const ctl::Control &control) {
 bool HaMqtt::forgetControl(uint32_t address) {
   char topic[TOPIC_LEN];
   topicControl(topic, sizeof(topic), MQTT_DEVICE_ID, address);
-  if (!_mqtt.publish(topic, "", true)) {
+  if (!publishMqtt(topic, "", true)) {
     return false;
   }
   publishControlRemoval(address);
@@ -278,22 +305,24 @@ bool HaMqtt::forgetControl(uint32_t address) {
 // that would lower the retained value means something is wrong — a stale local store, a
 // remote that was re-added, a mirror that has moved on — and sending it would destroy the
 // one copy that survives the board.
-void HaMqtt::publishCounter(uint8_t remote, bool force) {
+bool HaMqtt::publishCounter(uint8_t remote, bool force) {
   const uint32_t value = _remotes.counter(remote);
   if (!_remotes.hasCounter(remote)) {
-    return;
+    return true;
   }
   // `force` is for a reconnect that found no retained mirror at all — a broker rebuilt
   // without persistence — where the floor would suppress the very republish that restores it.
   if (!force && value <= _mirrorSeen[remote]) {
-    return;
+    return true;
   }
   char topic[TOPIC_LEN], payload[12];
   topicCode(topic, sizeof(topic), MQTT_DEVICE_ID, remote);
   snprintf(payload, sizeof(payload), "%lu", (unsigned long)value);
-  if (_mqtt.publish(topic, payload, true)) {
-    _mirrorSeen[remote] = value;
+  if (!publishMqtt(topic, payload, true)) {
+    return false;
   }
+  _mirrorSeen[remote] = value;
+  return true;
 }
 
 bool HaMqtt::connect() {
@@ -325,23 +354,23 @@ bool HaMqtt::connect() {
   // they would simply be lost. Both happen at the end of finishReconcile().
   char topic[TOPIC_LEN];
   topicConfig(topic, sizeof(topic), MQTT_DEVICE_ID);
-  _mqtt.subscribe(topic);
+  if (!subscribeMqtt(topic)) return false;
   topicCodeWildcard(topic, sizeof(topic), MQTT_DEVICE_ID);
-  _mqtt.subscribe(topic);
+  if (!subscribeMqtt(topic)) return false;
   topicNames(topic, sizeof(topic), MQTT_DEVICE_ID);
-  _mqtt.subscribe(topic);
+  if (!subscribeMqtt(topic)) return false;
   // The learned controls. Retained and replayed on subscribe, which is what lets a
   // replacement board recover a map somebody spent an hour walking a house to build.
   topicControlWildcard(topic, sizeof(topic), MQTT_DEVICE_ID);
-  _mqtt.subscribe(topic);
+  if (!subscribeMqtt(topic)) return false;
   // Our own retained cover state, read back. The device infers position from what it
   // transmitted and holds it in RAM, so every reboot and every OTA used to throw it away —
   // while Home Assistant kept it. Reading it back is the same trick as the counters: the
   // durable copy lives off the board.
   snprintf(topic, sizeof(topic), "%s/+/state", MQTT_DEVICE_ID);
-  _mqtt.subscribe(topic);
+  if (!subscribeMqtt(topic)) return false;
   snprintf(topic, sizeof(topic), "%s/+/position", MQTT_DEVICE_ID);
-  _mqtt.subscribe(topic);
+  if (!subscribeMqtt(topic)) return false;
 
   _haveStaged = false;
   for (uint8_t i = 0; i < rs::MAX_REMOTES; i++) {
@@ -366,43 +395,70 @@ void HaMqtt::finishReconcile() {
   // be answered from a store that is about to be raised.
   char wildcard[TOPIC_LEN];
   topicCommandWildcard(wildcard, sizeof(wildcard), MQTT_DEVICE_ID);
-  if (!_mqtt.subscribe(wildcard)) {
-    logError("mqtt      : subscribe to %s rejected", wildcard);
+  if (!subscribeMqtt(wildcard)) {
+    _remotes.hold(false);
+    logError("mqtt      : subscribe to %s rejected, commands released", wildcard);
+    return;
   }
 
-  // Retained, so Home Assistant recreates the entities after its own restart without
-  // waiting for us to reconnect — and republished on every reconnect, because a broker
-  // that lost its retained set is exactly what a reconnect looks like from here. State
-  // goes with it for the same reason: republishing the config alone brings the entities
-  // back blank, which is the failure the retained state topic exists to prevent.
-  //
-  // Disabled remotes are skipped, or a broker restart would resurrect an entity the web
-  // UI has just removed.
-  for (uint8_t i = 0; i < _remotes.count(); i++) {
-    if (!_remotes.enabled(i)) {
-      continue;
-    }
-    publishDiscovery(i);
-    publishState(i);
-    publishCounter(i, !_haveMirror[i]);   // forced when nothing was retained for it
-  }
+  // A weak link can short-write after the packet prefix has reached the socket. Replay one
+  // retained packet per loop pass, and close the stream before anything follows a failure.
+  _announcement.start(_remotes.count(), _controls.count());
+}
 
-  // The control map is RAM-only by design, on the grounds that the broker replays it — so a
-  // broker that came back empty loses both the retained topics and the entities, and this is
-  // the only thing that restores either.
-  for (uint8_t i = 0; i < _controls.count(); i++) {
-    republishControl(_controls.at(i));
-  }
-
-  publishBridgeDiscovery();
-  publishHealth();
-
-  char availability[TOPIC_LEN];
-  topicAvailability(availability, sizeof(availability), MQTT_DEVICE_ID);
-  _mqtt.publish(availability, "online", true);
-
+void HaMqtt::abortAnnouncement() {
+  _announcement.stop();
+  _wifi.stop();
   _remotes.hold(false);
-  logLine("mqtt      : ready, %u remotes announced", _remotes.count());
+  logError("mqtt      : announcement aborted, commands released");
+}
+
+void HaMqtt::serviceAnnouncement() {
+  using mqtt_announcement::Kind;
+  const mqtt_announcement::Step step = _announcement.current();
+  bool ok = true;
+
+  switch (step.kind) {
+    case Kind::RemoteDiscovery:
+      ok = !_remotes.enabled(step.index) || publishDiscoveryPart(step.index, step.part);
+      break;
+    case Kind::RemoteState:
+      ok = !_remotes.enabled(step.index) || publishStatePart(step.index, step.part);
+      break;
+    case Kind::RemoteCounter:
+      ok = !_remotes.enabled(step.index) ||
+           publishCounter(step.index, !_haveMirror[step.index]);
+      break;
+    case Kind::ControlConfig:
+      ok = publishControlConfig(_controls.at(step.index));
+      break;
+    case Kind::ControlDiscovery:
+      ok = publishControlDiscovery(_controls.at(step.index));
+      break;
+    case Kind::BridgeDiscovery:
+      ok = publishBridgeDiscoveryPart(step.part);
+      break;
+    case Kind::Health:
+      ok = publishHealth();
+      break;
+    case Kind::Availability: {
+      char topic[TOPIC_LEN];
+      topicAvailability(topic, sizeof(topic), MQTT_DEVICE_ID);
+      ok = publishMqtt(topic, "online", true);
+      break;
+    }
+    case Kind::None:
+      return;
+  }
+
+  if (!ok) {
+    abortAnnouncement();
+    return;
+  }
+  if (_announcement.advance()) {
+    _remotes.hold(false);
+    logLine("mqtt      : ready, %u remotes announced", _remotes.count());
+  }
 }
 
 // The whole recovery story, in one loop. On a board that has been running, local is ahead
@@ -411,7 +467,7 @@ void HaMqtt::finishReconcile() {
 // a value held only in RAM is gone at the next reboot and the device would resume sending
 // codes from years ago.
 void HaMqtt::reconcileCounters() {
-  uint8_t adopted = 0, corrected = 0, refused = 0, missing = 0;
+  uint8_t adopted = 0, pending = 0, refused = 0, missing = 0;
 
   for (uint8_t i = 0; i < _remotes.count(); i++) {
     uint32_t effective = 0;
@@ -438,8 +494,7 @@ void HaMqtt::reconcileCounters() {
         }
         break;
       case rs::REC_KEEP_PUBLISH:
-        publishCounter(i, true);
-        corrected++;
+        pending++;
         break;
       case rs::REC_REFUSE_JUMP:
         logError("mqtt      : remote %u mirror %lu is %lu ahead of %lu — refused",
@@ -456,9 +511,9 @@ void HaMqtt::reconcileCounters() {
     }
   }
 
-  if (adopted || corrected || refused || missing) {
-    logLine("mqtt      : counters %u adopted, %u corrected upward, %u refused, %u missing",
-            adopted, corrected, refused, missing);
+  if (adopted || pending || refused || missing) {
+    logLine("mqtt      : counters %u adopted, %u pending upward, %u refused, %u missing",
+            adopted, pending, refused, missing);
   }
   if (missing > 0) {
     logError("mqtt      : %u remote(s) have no rolling code and cannot transmit", missing);
@@ -591,7 +646,7 @@ void HaMqtt::publishConfigDocument() {
     logError("mqtt      : config document does not fit %u bytes", (unsigned)MQTT_BUFFER);
     return;
   }
-  if (!_mqtt.publish(topic, payload, true)) {
+  if (!publishMqtt(topic, payload, true)) {
     logError("mqtt      : config publish rejected (%u bytes)", (unsigned)n);
   }
 }
@@ -655,15 +710,17 @@ void HaMqtt::publishDiscoveryRemoval(uint8_t remote) {
   for (uint8_t i = 0; i < 3; i++) {
     uniqueId(object, sizeof(object), MQTT_DEVICE_ID, remote, SUFFIX[i]);
     discoveryTopic(topic, sizeof(topic), HA_DISCOVERY_PREFIX, COMPONENT[i], object);
-    _mqtt.publish(topic, "", true);
+    if (!publishMqtt(topic, "", true)) {
+      return;
+    }
   }
   char state[TOPIC_LEN];
   topicCoverState(state, sizeof(state), MQTT_DEVICE_ID, remote);
-  _mqtt.publish(state, "", true);
+  if (!publishMqtt(state, "", true)) return;
   topicMyState(state, sizeof(state), MQTT_DEVICE_ID, remote);
-  _mqtt.publish(state, "", true);
+  if (!publishMqtt(state, "", true)) return;
   topicCoverPosition(state, sizeof(state), MQTT_DEVICE_ID, remote);
-  _mqtt.publish(state, "", true);
+  if (!publishMqtt(state, "", true)) return;
   // **Not the code state topic.** That retained payload is the mirror reconcileCounters()
   // reads back, and removal deliberately keeps it — only the sensor's discovery config is
   // cleared above.
@@ -671,6 +728,14 @@ void HaMqtt::publishDiscoveryRemoval(uint8_t remote) {
 }
 
 void HaMqtt::publishDiscovery(uint8_t remote) {
+  for (uint8_t entity = 0; entity < 3; entity++) {
+    if (!publishDiscoveryPart(remote, entity)) {
+      return;
+    }
+  }
+}
+
+bool HaMqtt::publishDiscoveryPart(uint8_t remote, uint8_t entity) {
   char availability[TOPIC_LEN], command[TOPIC_LEN], state[TOPIC_LEN], myState[TOPIC_LEN];
   char position[TOPIC_LEN];
   topicAvailability(availability, sizeof(availability), MQTT_DEVICE_ID);
@@ -695,8 +760,7 @@ void HaMqtt::publishDiscovery(uint8_t remote) {
   // Prog is deliberately not among them: Home Assistant mirrors what the bridge *does*, and
   // pairing is configuration. It lives on the settings page, behind a password. The command
   // topic refuses it for the same reason — not publishing a button is not a gate.
-  for (uint8_t entity = 0; entity < 3; entity++) {
-    JsonDocument doc;
+  JsonDocument doc;
     JsonObject device = doc["device"].to<JsonObject>();
     device["identifiers"][0] = identifier;
     device["name"] = name;
@@ -780,21 +844,22 @@ void HaMqtt::publishDiscovery(uint8_t remote) {
     // Truncation is checked separately from the publish: serializeJson silently writes
     // as much as fits, and half a JSON document on a retained config topic is a shutter
     // that never appears with nothing anywhere saying why.
-    const size_t written = serializeJson(doc, payload, sizeof(payload));
-    if (written >= sizeof(payload) - 1) {
-      logError("mqtt      : discovery payload for %s does not fit", object);
-      continue;
-    }
-    if (!_mqtt.publish(topic, payload, true)) {
-      logError("mqtt      : discovery rejected for %s (%u bytes)", object,
-               (unsigned)written);
-    }
+  const size_t written = serializeJson(doc, payload, sizeof(payload));
+  if (written >= sizeof(payload) - 1) {
+    logError("mqtt      : discovery payload for %s does not fit", object);
+    return true;
   }
+  if (!publishMqtt(topic, payload, true)) {
+    logError("mqtt      : discovery rejected for %s (%u bytes)", object,
+             (unsigned)written);
+    return false;
+  }
+  return true;
 }
 
 // One extra Home Assistant device for the bridge itself, carrying what the store is doing.
 // Separate from the twelve remotes because it is not about any one shutter.
-void HaMqtt::publishBridgeDiscovery() {
+bool HaMqtt::publishBridgeDiscoveryPart(uint8_t part) {
   char availability[TOPIC_LEN], health[TOPIC_LEN];
   topicAvailability(availability, sizeof(availability), MQTT_DEVICE_ID);
   topicHealth(health, sizeof(health), MQTT_DEVICE_ID);
@@ -824,7 +889,8 @@ void HaMqtt::publishBridgeDiscovery() {
       "measurement"};
 
   char object[OBJECT_ID_LEN], topic[DISCOVERY_TOPIC_LEN], payload[PAYLOAD_LEN];
-  for (uint8_t i = 0; i < SENSORS; i++) {
+  if (part < SENSORS) {
+    const uint8_t i = part;
     JsonDocument doc;
     JsonObject device = doc["device"].to<JsonObject>();
     device["identifiers"][0] = MQTT_DEVICE_ID;
@@ -850,12 +916,11 @@ void HaMqtt::publishBridgeDiscovery() {
     doc["unique_id"] = object;
     discoveryTopic(topic, sizeof(topic), HA_DISCOVERY_PREFIX, "sensor", object);
     const size_t written = serializeJson(doc, payload, sizeof(payload));
-    if (written < sizeof(payload) - 1) {
-      _mqtt.publish(topic, payload, true);
-    }
+    return written >= sizeof(payload) - 1 || publishMqtt(topic, payload, true);
   }
 
   // The one that matters enough to be a problem rather than a number.
+  if (part == SENSORS) {
   JsonDocument doc;
   JsonObject device = doc["device"].to<JsonObject>();
   device["identifiers"][0] = MQTT_DEVICE_ID;
@@ -870,8 +935,7 @@ void HaMqtt::publishBridgeDiscovery() {
   doc["unique_id"] = object;
   discoveryTopic(topic, sizeof(topic), HA_DISCOVERY_PREFIX, "binary_sensor", object);
   const size_t written = serializeJson(doc, payload, sizeof(payload));
-  if (written < sizeof(payload) - 1) {
-    _mqtt.publish(topic, payload, true);
+    return written >= sizeof(payload) - 1 || publishMqtt(topic, payload, true);
   }
 
   // The one worth an automation. A bridge that is deaf still answers its web page, still
@@ -892,9 +956,7 @@ void HaMqtt::publishBridgeDiscovery() {
   radio["unique_id"] = object;
   discoveryTopic(topic, sizeof(topic), HA_DISCOVERY_PREFIX, "binary_sensor", object);
   const size_t radioWritten = serializeJson(radio, payload, sizeof(payload));
-  if (radioWritten < sizeof(payload) - 1) {
-    _mqtt.publish(topic, payload, true);
-  }
+  return radioWritten >= sizeof(payload) - 1 || publishMqtt(topic, payload, true);
 }
 
 // One event entity per named control, so a wall button becomes an automation trigger.
@@ -935,7 +997,7 @@ bool HaMqtt::publishControlDiscovery(const ctl::Control &control) {
     logError("mqtt      : control entity payload did not fit");
     return false;
   }
-  return _mqtt.publish(topic, payload, true);
+  return publishMqtt(topic, payload, true);
 }
 
 void HaMqtt::publishControlRemoval(uint32_t address) {
@@ -943,7 +1005,7 @@ void HaMqtt::publishControlRemoval(uint32_t address) {
   snprintf(object, sizeof(object), "%s_ctl_%06lx", MQTT_DEVICE_ID,
            (unsigned long)(address & 0xFFFFFFu));
   discoveryTopic(topic, sizeof(topic), HA_DISCOVERY_PREFIX, "event", object);
-  _mqtt.publish(topic, "", true);
+  publishMqtt(topic, "", true);
 }
 
 // **The only radio health that outlives a reboot.** Both log rings are RAM, so the fault
@@ -955,7 +1017,7 @@ void HaMqtt::publishControlRemoval(uint32_t address) {
 // every sample — the live edge rate, RSSI — writes a recorder row a minute forever and
 // answers nothing a live read of /status would not. A counter that is flat until something
 // goes wrong costs almost nothing to store and puts the moment it went wrong on a graph.
-void HaMqtt::publishHealth() {
+bool HaMqtt::publishHealth() {
   const Receiver::Stats rx = _receiver.stats();
   char topic[TOPIC_LEN], payload[256];
   topicHealth(topic, sizeof(topic), MQTT_DEVICE_ID);
@@ -967,42 +1029,55 @@ void HaMqtt::publishHealth() {
            _store.degraded() ? "true" : "false", (unsigned long)_config.epoch,
            rx.marcState == CC1101_STATE_RX ? "true" : "false", rx.mutes,
            (unsigned long)rx.overflows, (unsigned long)rx.frames, rx.peakRate);
-  _mqtt.publish(topic, payload, true);
+  return publishMqtt(topic, payload, true);
 }
 
 // Separate from publishState() because it has a rhythm of its own: once per settled state,
 // then once a second for as long as the shutter is moving.
-void HaMqtt::publishPosition(uint8_t remote) {
+bool HaMqtt::publishPosition(uint8_t remote) {
   const RemoteState &state = _remotes.state(remote);
   const int16_t pct = state.percent(millis());
   if (pct < 0) {
-    return;
+    return true;
   }
   char topic[TOPIC_LEN], payload[8];
   topicCoverPosition(topic, sizeof(topic), MQTT_DEVICE_ID, remote);
   snprintf(payload, sizeof(payload), "%d", pct);
-  _mqtt.publish(topic, payload, !state.travelling());
+  return publishMqtt(topic, payload, !state.travelling());
 }
 
 void HaMqtt::publishState(uint8_t remote) {
+  for (uint8_t part = 0; part < 3; part++) {
+    if (!publishStatePart(remote, part)) {
+      return;
+    }
+  }
+}
+
+bool HaMqtt::publishStatePart(uint8_t remote, uint8_t part) {
   const RemoteState &state = _remotes.state(remote);
   char topic[TOPIC_LEN];
 
-  // Retained, so a Home Assistant restart does not leave every cover blank until somebody
-  // presses something — but only once the shutter has arrived. A retained `opening` would
-  // outlive the travel and be restored, on the next boot, as a shutter that never lands.
-  if (state.position() != COVER_UNKNOWN) {
+  if (part == 0) {
+    // Never retain a travelling state: it would be restored after reboot as a shutter that
+    // never lands.
+    if (state.position() == COVER_UNKNOWN) {
+      return true;
+    }
     topicCoverState(topic, sizeof(topic), MQTT_DEVICE_ID, remote);
-    _mqtt.publish(topic, coverPositionName(state.position()), !state.travelling());
+    return publishMqtt(topic, coverPositionName(state.position()), !state.travelling());
   }
-  publishPosition(remote);
+  if (part == 1) {
+    return publishPosition(remote);
+  }
 
   // The My switch is momentary: it reports itself off after every press, including the
   // presses it did not cause.
-  if (state.last() == SOMFY_MY) {
-    topicMyState(topic, sizeof(topic), MQTT_DEVICE_ID, remote);
-    _mqtt.publish(topic, "off", true);
+  if (state.last() != SOMFY_MY) {
+    return true;
   }
+  topicMyState(topic, sizeof(topic), MQTT_DEVICE_ID, remote);
+  return publishMqtt(topic, "off", true);
 }
 
 // Nothing is published from here. PubSubClient hands the callback pointers into the very
