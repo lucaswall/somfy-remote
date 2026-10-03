@@ -20,8 +20,10 @@ Read `GET /status`; no arming, transmission or reset is needed.
 
 `readConfig()` accepts only configuration addresses 0x00–0x2E and a non-null output
 pointer. Failed reads leave the output unchanged. Snapshot collection sends no
-strobes or writes, changes no gain/frequency/power, and adds no recovery/reset path.
-Existing protective mute and retry behavior is unchanged.
+strobes or writes and changes no gain, frequency or power. A stable mismatch or invalid
+double-read marks the radio faulted after the snapshot, so the main loop runs the same
+bounded reset, rewrite and complete double-read verification used at startup instead of
+repeating an SRX-only retry against damaged configuration.
 
 Before firmware-only OTA, preserve the running image and verify its build stamp.
 Rollback uses that firmware image through the same ArduinoOTA transport, **never**

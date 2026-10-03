@@ -26,8 +26,8 @@ class CC1101 {
   // not to this class, which never touches it.
   explicit CC1101(uint8_t csnPin) : _csn(csnPin) {}
 
-  // Resets the chip, writes the configuration and sets the frequency. False means the
-  // chip did not answer, which is wiring or power and never software.
+  // Resets the chip, writes the configuration and sets the frequency. It succeeds only
+  // after every active receive register reads back identically twice at its expected value.
   bool begin(float megahertz);
 
   // Enters transmit and waits for the synthesiser to settle. Data sent before it does is
@@ -80,7 +80,7 @@ class CC1101 {
   void writeRegister(uint8_t address, uint8_t value);
   void writeBurst(uint8_t address, const uint8_t *values, uint8_t count);
   void reset();
-  void configure();
+  bool configure(float megahertz);
   void setFrequency(float megahertz);
   bool waitForState(uint8_t want);
 

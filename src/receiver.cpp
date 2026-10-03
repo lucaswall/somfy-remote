@@ -202,6 +202,9 @@ void Receiver::captureRadioSnapshot() {
   }
   logLine("rx config : first mute, mismatch 0x%04X invalid 0x%04X",
           _radioSnapshot.mismatches, _radioSnapshot.invalid);
+  if (_radioSnapshot.faulted()) {
+    _radio.markFaulted();
+  }
 }
 
 // Resume restores what suspend found: a receiver that was cooling stays cooling.

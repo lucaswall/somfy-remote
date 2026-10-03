@@ -45,6 +45,8 @@ struct RadioSnapshot {
       mismatches |= bit;
     }
   }
+
+  bool faulted() const { return mismatches != 0 || invalid != 0; }
 };
 
 // Receive-enabled dwell is NOT proof of decoded RF or continuous MARCSTATE RX.

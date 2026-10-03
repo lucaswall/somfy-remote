@@ -91,6 +91,21 @@ static void snapshot_replaces_result_and_ignores_out_of_range() {
   TEST_ASSERT_EQUAL_UINT16(0, s.mismatches);
   TEST_ASSERT_EQUAL_UINT16(0, s.invalid);
 }
+static void snapshot_fault_decision_covers_valid_mismatch_and_invalid() {
+  RadioSnapshot valid;
+  for (uint8_t i = 0; i < RADIO_REGISTER_COUNT; ++i) {
+    valid.add(i, true, true, RADIO_REGISTERS[i].expected, RADIO_REGISTERS[i].expected);
+  }
+  TEST_ASSERT_FALSE(valid.faulted());
+
+  RadioSnapshot mismatch = valid;
+  mismatch.add(0, true, true, 0x2E, 0x2E);
+  TEST_ASSERT_TRUE(mismatch.faulted());
+
+  RadioSnapshot invalid = valid;
+  invalid.add(0, true, false, RADIO_REGISTERS[0].expected, 0);
+  TEST_ASSERT_TRUE(invalid.faulted());
+}
 static void duty_is_bounded_and_empty_window_is_zero() {
   RxDwell::Window w;
   TEST_ASSERT_EQUAL_UINT16(0, w.permille(RxDwell::Receiving));
@@ -118,6 +133,7 @@ int main() {
   RUN_TEST(snapshot_distinguishes_failure_from_mismatch);
   RUN_TEST(expected_registers_pin_receive_configuration);
   RUN_TEST(snapshot_replaces_result_and_ignores_out_of_range);
+  RUN_TEST(snapshot_fault_decision_covers_valid_mismatch_and_invalid);
   RUN_TEST(duty_is_bounded_and_empty_window_is_zero);
   RUN_TEST(begin_resets_previous_windows);
   return UNITY_END();

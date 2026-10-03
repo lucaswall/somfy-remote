@@ -98,7 +98,7 @@ void setup() {
       logError("radio     : GDO0 does not read back — check the wire to D1/GPIO5");
     }
   } else {
-    logError("radio     : CC1101 did not answer, will retry — run `make radio`");
+    logError("radio     : CC1101 initialization did not verify, will retry — run `make radio`");
   }
 
   if (!store.begin()) {

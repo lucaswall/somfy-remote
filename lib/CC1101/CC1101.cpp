@@ -3,8 +3,12 @@
 #include <Arduino.h>
 #include <SPI.h>
 
-// 4 MHz is inside the CC1101's 6.5 MHz single-access limit with margin for dupont wire.
-static const SPISettings SPI_SETTINGS(4000000, MSBFIRST, SPI_MODE0);
+#include "rx_diagnostics.h"
+
+// Long Dupont leads need more settling time than the CC1101's headline SPI limit allows.
+static const SPISettings SPI_SETTINGS(1000000, MSBFIRST, SPI_MODE0);
+
+static const uint8_t CONFIGURE_ATTEMPTS = 3;
 
 // Header bits.
 static const uint8_t WRITE_BURST = 0x40;
@@ -74,14 +78,18 @@ bool CC1101::begin(float megahertz) {
   digitalWrite(_csn, HIGH);
   SPI.begin();
 
-  reset();
-  if (!present()) {
-    return false;
+  for (uint8_t attempt = 0; attempt < CONFIGURE_ATTEMPTS; ++attempt) {
+    reset();
+    if (!present()) {
+      continue;
+    }
+    if (configure(megahertz)) {
+      release();
+      return true;
+    }
+    release();
   }
-  configure();
-  setFrequency(megahertz);
-  idle();
-  return true;
+  return false;
 }
 
 bool CC1101::present() {
@@ -163,7 +171,7 @@ void CC1101::reset() {
 
 // **The transmit half must not change**: every motor in this house is paired against it.
 // Everything added for receive acts on the demodulator and cannot alter the waveform.
-void CC1101::configure() {
+bool CC1101::configure(float megahertz) {
   // Asynchronous serial mode: the PA follows the GDO0 pin directly, so the waveform is
   // whatever the ESP puts on it. PKT_FORMAT=11, infinite packet length.
   writeRegister(REG_PKTCTRL0, 0x32);
@@ -237,6 +245,18 @@ void CC1101::configure() {
   // the 433 MHz band.
   const uint8_t paTable[8] = {0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
   writeBurst(REG_PATABLE, paTable, sizeof(paTable));
+
+  setFrequency(megahertz);
+  writeRegister(REG_IOCFG0, GDO0_SERIAL_DATA);
+  for (uint8_t i = 0; i < RADIO_REGISTER_COUNT; ++i) {
+    uint8_t value = 0, again = 0;
+    if (!readConfig(RADIO_REGISTERS[i].address, &value) ||
+        !readConfig(RADIO_REGISTERS[i].address, &again) ||
+        value != again || value != RADIO_REGISTERS[i].expected) {
+      return false;
+    }
+  }
+  return true;
 }
 
 void CC1101::setFrequency(float megahertz) {
